@@ -1,0 +1,73 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# uv
+.uv/
+uv.lock
+
+# PyCharm
+.idea/
+
+# VS Code
+.vscode/
+
+# Output
+parquet_out/
+*.parquet
+
+# Environment
+.env.local
+.env.*.local
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+
+# Existing project files
+ceto_ingest/**
+cetolib/**
+
+# Rust
+rust/**/target/
+rust/**/*.rs.bk
+rust/**/Cargo.lock
+*.so
+*.dylib
+*.dll
+
+# Cache
+.cache/
+cache/

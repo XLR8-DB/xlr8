@@ -63,30 +63,19 @@ class String(BaseType):
     def __eq__(self, other) -> bool:
         return isinstance(other, String)
 
-
-@dataclass(frozen=True)
+# TODO: Support Int32 vs Int64 based on schema definition
 class Int(BaseType):
-    """Integer type."""
-    bits: int = 64
+    """Integer type (always 64-bit)."""
 
     def to_arrow(self) -> pa.DataType:
-        return pa.int64() if self.bits == 64 else pa.int32()
-    def __post_init__(self):
-        if self.bits not in (32, 64):
-            raise ValueError("Int bits must be either 32 or 64")
+        return pa.int64()
 
-
-@dataclass(frozen=True)
+# TODO: Support Float32 vs Float64 based on schema definition
 class Float(BaseType):
-    """Floating-point type."""
-    bits: int = 64
+    """Floating-point type (always 64-bit)."""
 
     def to_arrow(self) -> pa.DataType:
-        return pa.float64() if self.bits == 64 else pa.float32()
-    def __post_init__(self):
-        if self.bits not in (32, 64):
-            raise ValueError("Float bits must be either 32 or 64")
-
+        return pa.float64()
 
 class Bool(BaseType):
     """Boolean type."""

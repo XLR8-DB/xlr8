@@ -1,7 +1,7 @@
 """
 Schema system for XLR8.
 
-Provides types, schema definitions for MongoDB documents.
+Provides types and schema definitions for MongoDB documents.
 """
 
 from .types import (
@@ -19,6 +19,7 @@ from .types import (
 
 # Import types module for Types.X syntax
 from . import types as Types
+from .schema import Schema
 
 __all__ = [
     # Types module for Types.X syntax
@@ -33,5 +34,7 @@ __all__ = [
     "ObjectId",
     "Any",
     "Struct",
-    "List"
+    "List",
+    # Schema
+    "Schema"
 ]
