@@ -592,6 +592,8 @@ def split_global_and(
     Used by brackets.py for bracket extraction.
     Note: is_chunkable_query() uses normalize_query() for validation.
 
+    IMPORTANT: This function expects a normalized query (no nested $and).
+    Use normalize_query() first if query structure is unknown.
     Used by bracket extraction to create parallel work units.
 
     Args:
