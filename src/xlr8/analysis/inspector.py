@@ -163,6 +163,7 @@ _all__ = [
     "split_global_and",
     "extract_time_bounds",
     "normalize_datetime",
+    "normalize_query",
     # Internal (exported for testing)
     "_or_depth",
     "_references_field",
@@ -735,3 +736,47 @@ def extract_time_bounds(
                 hi = hi_temp + timedelta(microseconds=1)
 
     return lo, hi
+
+
+def normalize_query(query: dict[str, Any]) -> tuple[dict[str, Any], dict[str, bool]]:
+    """
+    Phase 1: Normalize query structure for consistent analysis.
+
+    Transformations:
+    - Flatten nested $and operators
+    - Detect complexity patterns (multiple $or, nested $or)
+
+    Args:
+        query: MongoDB find() filter
+
+    Returns:
+        Tuple of (normalized_query, complexity_flags)
+        - normalized_query: Flattened query
+        - complexity_flags: {multiple_or, nested_or, complex_negation}
+    """
+
+    def flatten_and_operators(obj: Any) -> Any:
+        """Recursively flatten nested $and operators."""
+        if not isinstance(obj, dict):
+            return obj
+
+        result = {}
+        for key, value in obj.items():
+            if key == "$and" and isinstance(value, list):
+                # Flatten nested $and
+                flattened = []
+                for item in value:
+                    if isinstance(item, dict) and len(item) == 1 and "$and" in item:
+                        # Nested $and - merge up
+                        flattened.extend(flatten_and_operators(item)["$and"])
+                    else:
+                        flattened.append(flatten_and_operators(item))
+                result["$and"] = flattened
+            elif isinstance(value, dict):
+                result[key] = flatten_and_operators(value)
+            elif isinstance(value, list):
+                result[key] = [flatten_and_operators(item) for item in value]
+            else:
+                result[key] = value
+
+        return result
