@@ -145,7 +145,7 @@ API USAGE
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 _all__ = [
@@ -161,6 +161,7 @@ _all__ = [
     # Query analysis utilities
     "or_depth",
     "split_global_and",
+    "extract_time_bounds",
     "normalize_datetime",
     # Internal (exported for testing)
     "_or_depth",
@@ -686,3 +687,46 @@ def normalize_datetime(dt: Any) -> datetime | None:
         except (ValueError, AttributeError):
             return None
     return None
+
+
+def extract_time_bounds(
+    query_dict: dict[str, Any], time_field: str
+) -> tuple[datetime | None, datetime | None]:
+    """
+    Extract time range [lo, hi) from query.
+
+    Used by brackets.py for bracket time range extraction.
+    Note: is_chunkable_query() uses extract_time_bounds_recursive() for validation.
+
+    Handles:
+        - $gte/$gt as lower bound
+        - $lt/$lte as upper bound ($lte converted to $lt by adding 1 microsecond)
+
+    Args:
+        query_dict: Query fragment containing time field
+        time_field: Name of time field
+
+    Returns:
+        Tuple of (lower_bound, upper_bound), each is datetime or None
+
+    Examples:
+        >>> extract_time_bounds(
+        ...     {"recordedAt": {"$gte": datetime(2024, 1, 1),
+        ...     "$lt": datetime(2024, 2, 1)}},
+        ...     "recordedAt"
+        ... )
+        (datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 2, 1, tzinfo=UTC))
+    """
+    lo, hi = None, None
+    tf = query_dict.get(time_field)
+
+    if isinstance(tf, dict):
+        lo = normalize_datetime(tf.get("$gte") or tf.get("$gt"))
+        if "$lt" in tf:
+            hi = normalize_datetime(tf["$lt"])
+        elif "$lte" in tf:
+            hi_temp = normalize_datetime(tf["$lte"])
+            if hi_temp:
+                hi = hi_temp + timedelta(microseconds=1)
+
+    return lo, hi
