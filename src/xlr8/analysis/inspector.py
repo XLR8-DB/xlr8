@@ -150,6 +150,9 @@ _all__ = [
     # Classification sets
     "ALWAYS_ALLOWED",
     "CONDITIONAL",
+    "NEVER_ALLOWED",
+    # Validation
+    "ValidationResult",
 ]
 
 # =============================================================================
