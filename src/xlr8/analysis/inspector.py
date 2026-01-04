@@ -93,11 +93,11 @@ CONDITIONAL (3 operators)
     $not  - Allowed if NOT applied to the time field
 
     Examples:
-        ✓ {"$or": [{"region": "US"}, {"region": "EU"}]}
-        ✗ {"$or": [{"$or": [{...}]}, {...}]}
+        allowed - {"$or": [{"region": "US"}, {"region": "EU"}]}
+        disallowed - {"$or": [{"$or": [{...}]}, {...}]}
 
-        ✓ {"$nor": [{"status": "deleted"}], "timestamp": {...}}
-        ✗ {"$nor": [{"timestamp": {"$lt": t1}}]}
+        allowed - {"$nor": [{"status": "deleted"}], "timestamp": {...}}
+        disallowed - {"$nor": [{"timestamp": {"$lt": t1}}]}
 
 NEVER_ALLOWED (17 operators)
     These cannot be parallelized safely:
@@ -157,6 +157,9 @@ _all__ = [
     "has_forbidden_ops",
     "check_conditional_operators",
     "validate_query_for_chunking",
+    # Query analysis utilities
+    "or_depth",
+    "split_global_and",
     # Internal (exported for testing)
     "_or_depth",
     "_references_field",
@@ -556,3 +559,102 @@ def validate_query_for_chunking(
         return False, result.reason
 
     return True, ""
+
+
+# =============================================================================
+# QUERY STRUCTURE ANALYSIS
+# =============================================================================
+
+
+def or_depth(obj: Any, depth: int = 0) -> int:
+    """
+    Calculate $or nesting depth (backwards-compatible API).
+
+    Returns 0 for no $or, 1 for top-level $or, 2+ for nested.
+    """
+    if isinstance(obj, dict):
+        local = 1 if "$or" in obj else 0
+        return max(
+            [depth + local]
+            + [or_depth(v, depth + (1 if k == "$or" else 0)) for k, v in obj.items()]
+        )
+    if isinstance(obj, list):
+        return max((or_depth(x, depth) for x in obj), default=depth)
+    return depth
+
+
+def split_global_and(
+    query: dict[str, Any],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """
+    Split query into global AND conditions and $or branches.
+
+    Used by brackets.py for bracket extraction.
+    Note: is_chunkable_query() uses normalize_query() for validation.
+
+    Used by bracket extraction to create parallel work units.
+
+    Args:
+        query: MongoDB query dict
+
+    Returns:
+        Tuple of (global_conditions, or_branches)
+        or_branches is empty list if no $or present
+
+    Examples:
+        # Simple query without $or
+        >>> split_global_and({"status": "active", "value": {"$gt": 0}})
+        ({'status': 'active', 'value': {'$gt': 0}}, [])
+
+        # Query with $or - separates global from branches
+        >>> split_global_and({
+        ...     "$or": [{"sensor": "A"}, {"sensor": "B"}],
+        ...     "account_id": "123",
+        ...     "recordedAt": {"$gte": t1, "$lt": t2}
+        ... })
+        ({'account_id': '123', 'recordedAt': {...}}, [{'sensor': 'A'}, {'sensor': 'B'}])
+
+        # The global conditions apply to ALL branches:
+        # Bracket 1: {"account_id": "123", "recordedAt": {...}, "sensor": "A"}
+        # Bracket 2: {"account_id": "123", "recordedAt": {...}, "sensor": "B"}
+    """
+    q = dict(query)
+
+    # Case 1: Direct top-level $or
+    if "$or" in q:
+        or_list = q.pop("$or")
+        if not isinstance(or_list, list):
+            return {}, []
+
+        global_and: dict[str, Any] = {}
+        if "$and" in q and isinstance(q["$and"], list):
+            for item in q.pop("$and"):
+                if isinstance(item, dict):
+                    global_and.update(item)
+        global_and.update(q)
+        return global_and, or_list
+
+    # Case 2: $or inside $and
+    if "$and" in q and isinstance(q["$and"], list):
+        and_items = q.pop("$and")
+        found_or: list[dict[str, Any]] = []
+        global_and: dict[str, Any] = {}
+
+        for item in and_items:
+            if not isinstance(item, dict):
+                return {}, []
+            if "$or" in item:
+                if found_or:
+                    return {}, []  # Multiple $or not supported
+                or_content = item["$or"]
+                if not isinstance(or_content, list):
+                    return {}, []
+                found_or = or_content
+            else:
+                global_and.update(item)
+
+        global_and.update(q)
+        return global_and, found_or
+
+    # Case 3: No $or
+    return q, []
