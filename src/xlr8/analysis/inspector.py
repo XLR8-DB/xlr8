@@ -145,6 +145,7 @@ API USAGE
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 _all__ = [
     # Classification sets
@@ -153,6 +154,7 @@ _all__ = [
     "NEVER_ALLOWED",
     # Validation
     "ValidationResult",
+    "has_forbidden_ops",
 ]
 
 # =============================================================================
@@ -334,3 +336,46 @@ class ValidationResult:
 
     def __bool__(self) -> bool:
         return self.is_valid
+
+
+# =============================================================================
+# CORE VALIDATION FUNCTIONS
+# =============================================================================
+
+
+def has_forbidden_ops(query: Any) -> tuple[bool, str | None]:
+    """
+    Check if query contains any NEVER_ALLOWED operator.
+
+    Recursively walks the query tree looking for forbidden operator keys.
+    Returns on first forbidden operator found (fail-fast).
+
+    Args:
+        query: MongoDB query (dict, list, or primitive)
+
+    Returns:
+        Tuple of (has_forbidden, operator_name)
+
+    Examples:
+        >>> has_forbidden_ops({"status": "active"})
+        (False, None)
+
+        >>> has_forbidden_ops({"location": {"$near": [0, 0]}})
+        (True, '$near')
+
+        >>> has_forbidden_ops({"$and": [{"$text": {"$search": "test"}}]})
+        (True, '$text')
+    """
+    if isinstance(query, dict):
+        for key, value in query.items():
+            if key in NEVER_ALLOWED:
+                return True, key
+            found, op = has_forbidden_ops(value)
+            if found:
+                return True, op
+    elif isinstance(query, list):
+        for item in query:
+            found, op = has_forbidden_ops(item)
+            if found:
+                return True, op
+    return False, None
