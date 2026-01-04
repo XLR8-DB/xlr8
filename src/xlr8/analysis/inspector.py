@@ -155,6 +155,10 @@ _all__ = [
     # Validation
     "ValidationResult",
     "has_forbidden_ops",
+    "check_conditional_operators",
+    # Internal (exported for testing)
+    "_or_depth",
+    "_references_field",
 ]
 
 # =============================================================================
@@ -379,3 +383,114 @@ def has_forbidden_ops(query: Any) -> tuple[bool, str | None]:
             if found:
                 return True, op
     return False, None
+
+
+def _references_field(obj: Any, field_name: str) -> bool:
+    """Check if query fragment references a specific field name."""
+    if isinstance(obj, dict):
+        if field_name in obj:
+            return True
+        return any(_references_field(v, field_name) for v in obj.values())
+    elif isinstance(obj, list):
+        return any(_references_field(item, field_name) for item in obj)
+    return False
+
+
+def _or_depth(obj: Any, current: int = 0) -> int:
+    """Calculate maximum nesting depth of $or operators."""
+    if isinstance(obj, dict):
+        depth = current + 1 if "$or" in obj else current
+        child_depths = [
+            _or_depth(v, current + 1) if k == "$or" else _or_depth(v, current)
+            for k, v in obj.items()
+        ]
+        return max([depth] + child_depths) if child_depths else depth
+    elif isinstance(obj, list):
+        return max((_or_depth(item, current) for item in obj), default=current)
+    return current
+
+
+def check_conditional_operators(
+    query: dict[str, Any], time_field: str
+) -> ValidationResult:
+    """
+    Validate CONDITIONAL operators are used safely.
+
+    Rules:
+        - $or: max depth 1 (no nested $or)
+        - $nor: must not reference time_field
+        - $not: must not be applied to time_field
+
+    Args:
+        query: MongoDB query dict
+        time_field: Name of time field (e.g., "recordedAt")
+
+    Returns:
+        ValidationResult with is_valid and reason
+
+    Examples:
+        >>> check_conditional_operators(
+        ...     {"$or": [{"a": 1}, {"b": 2}], "ts": {"$gte": t1}},
+        ...     "ts"
+        ... )
+        ValidationResult(is_valid=True)
+
+        >>> check_conditional_operators(
+        ...     {"$or": [{"$or": [{...}]}, {...}]},
+        ...     "ts"
+        ... )
+        ValidationResult(is_valid=False, reason="nested $or (depth 2 > 1)")
+
+        >>> check_conditional_operators(
+        ...     {"ts": {"$not": {"$lt": "2024-01-15"}}},
+        ...     "ts"
+        ... )
+        ValidationResult(is_valid=False, reason="$not applied to time field 'ts'")
+    """
+    # Check $or depth
+    depth = _or_depth(query)
+    if depth > 1:
+        return ValidationResult(False, f"nested $or (depth {depth} > 1)")
+
+    # Check for empty $or array
+    def check_empty_or(obj: Any) -> str | None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key == "$or" and isinstance(value, list) and len(value) == 0:
+                    return "$or with empty array matches no documents"
+                error = check_empty_or(value)
+                if error:
+                    return error
+        elif isinstance(obj, list):
+            for item in obj:
+                error = check_empty_or(item)
+                if error:
+                    return error
+        return None
+
+    error = check_empty_or(query)
+    if error:
+        return ValidationResult(False, error)
+
+    # Check $nor doesn't reference time field
+    def check_tree(obj: Any, parent_key: str | None = None) -> str | None:
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if key == "$nor" and isinstance(value, list):
+                    for clause in value:
+                        if _references_field(clause, time_field):
+                            return f"$nor references time field '{time_field}'"
+                if key == "$not" and parent_key == time_field:
+                    return f"$not applied to time field '{time_field}'"
+                error = check_tree(value, key)
+                if error:
+                    return error
+        elif isinstance(obj, list):
+            for item in obj:
+                error = check_tree(item, parent_key)
+                if error:
+                    return error
+        return None
+
+    error = check_tree(query)
+    return ValidationResult(False, error) if error else ValidationResult(True)
