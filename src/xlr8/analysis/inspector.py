@@ -144,6 +144,8 @@ API USAGE
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 _all__ = [
     # Classification sets
     "ALWAYS_ALLOWED",
@@ -156,21 +158,21 @@ _all__ = [
 
 ALWAYS_ALLOWED: frozenset[str] = frozenset(
     {
-        # - Comparison -----------------------------
+        # -- Comparison ---------------------------------------------------------------
         # Compare field value against a constant. Always document-local.
         #
         # Example: Find all sensors with readings above threshold
         #   {"value": {"$gt": 100}, "timestamp": {"$gte": t1, "$lt": t2}}
         #
-        "$eq",  # {"status": {"$eq": "active"}}  — equals
-        "$ne",  # {"status": {"$ne": "deleted"}} — not equals
-        "$gt",  # {"value": {"$gt": 100}}        — greater than
-        "$gte",  # {"value": {"$gte": 100}}       — greater or equal
-        "$lt",  # {"value": {"$lt": 0}}          — less than
-        "$lte",  # {"value": {"$lte": 100}}       — less or equal
-        "$in",  # {"type": {"$in": ["A", "B"]}}  — in set
-        "$nin",  # {"type": {"$nin": ["X", "Y"]}} — not in set
-        # - Element -------------------------------
+        "$eq",  # {"status": {"$eq": "active"}}  - equals
+        "$ne",  # {"status": {"$ne": "deleted"}} - not equals
+        "$gt",  # {"value": {"$gt": 100}}        - greater than
+        "$gte",  # {"value": {"$gte": 100}}       - greater or equal
+        "$lt",  # {"value": {"$lt": 0}}          - less than
+        "$lte",  # {"value": {"$lte": 100}}       - less or equal
+        "$in",  # {"type": {"$in": ["A", "B"]}}  - in set
+        "$nin",  # {"type": {"$nin": ["X", "Y"]}} - not in set
+        # -- Element ------------------------------------------------------------------
         # Check field existence or BSON type. Document-local metadata checks.
         #
         # Example: Only include documents with validated readings
@@ -178,7 +180,7 @@ ALWAYS_ALLOWED: frozenset[str] = frozenset(
         #
         "$exists",  # {"email": {"$exists": true}}
         "$type",  # {"value": {"$type": "double"}}
-        # - Array --------------------------------
+        # -- Array --------------------------------------------------------------------
         # Evaluate array fields within a single document.
         #
         # Example: Find sensors with all required tags
@@ -187,7 +189,7 @@ ALWAYS_ALLOWED: frozenset[str] = frozenset(
         "$all",  # {"tags": {"$all": ["a", "b"]}}
         "$elemMatch",  # {"readings": {"$elemMatch": {"value": {"$gt": 100}}}}
         "$size",  # {"items": {"$size": 3}}
-        # - Bitwise -------------------------------
+        # -- Bitwise ------------------------------------------------------------------
         # Compare integer bits against a bitmask. Document-local.
         #
         # Example: Find flags with specific bits set
@@ -197,7 +199,7 @@ ALWAYS_ALLOWED: frozenset[str] = frozenset(
         "$bitsAllSet",
         "$bitsAnyClear",
         "$bitsAnySet",
-        # - Evaluation (safe) --------------------------
+        # -- Evaluation (safe) --------------------------------------------------------
         # Pattern matching and validation that is document-local.
         #
         # Example: Match sensor names by pattern
@@ -205,10 +207,10 @@ ALWAYS_ALLOWED: frozenset[str] = frozenset(
         #
         "$regex",  # {"name": {"$regex": "^sensor_"}}
         "$options",  # Modifier for $regex
-        "$mod",  # {"value": {"$mod": [10, 0]}}  — divisible by 10
+        "$mod",  # {"value": {"$mod": [10, 0]}}  - divisible by 10
         "$jsonSchema",  # {"$jsonSchema": {"required": ["name"]}}
-        "$comment",  # {"$comment": "audit query"}  — annotation only
-        # - Logical (safe) ---------------------------
+        "$comment",  # {"$comment": "audit query"}  - annotation only
+        # -- Logical (safe) -----------------------------------------------------------
         # $and is always safe: conjunctions preserve correctness.
         #
         # Example: Multiple conditions all must match
@@ -218,50 +220,52 @@ ALWAYS_ALLOWED: frozenset[str] = frozenset(
     }
 )
 
+
 CONDITIONAL: frozenset[str] = frozenset(
     {
-        # - $or ---------------------------------
+        # -- $or ----------------------------------------------------------------------
         # ALLOWED at depth 1 only. Top-level $or is decomposed into "brackets"
         # which are executed and cached independently.
         #
-        #  ALLOWED (depth 1):
+        # [OK] ALLOWED (depth 1):
         #   {"$or": [
         #       {"sensor_id": "A", "timestamp": {"$gte": t1, "$lt": t2}},
         #       {"sensor_id": "B", "timestamp": {"$gte": t1, "$lt": t2}}
         #   ]}
         #
-        #  REJECTED (depth 2 - nested $or):
+        # [X] REJECTED (depth 2 - nested $or):
         #   {"$or": [{"$or": [{...}, {...}]}, {...}]}
         #
         "$or",
-        # - $nor --------------------------------
+        # -- $nor ---------------------------------------------------------------------
         # ALLOWED if not referencing time field. Negating time bounds creates
         # unpredictable behavior when chunking.
         #
-        #  ALLOWED (excludes status values):
+        # [OK] ALLOWED (excludes status values):
         #   {"$nor": [{"status": "deleted"}, {"status": "draft"}],
         #    "timestamp": {"$gte": t1, "$lt": t2}}
         #
-        #  REJECTED (negates time constraint):
+        # [X] REJECTED (negates time constraint):
         #   {"$nor": [{"timestamp": {"$lt": "2024-01-01"}}]}
         #
         "$nor",
-        # - $not --------------------------------
+        # -- $not ---------------------------------------------------------------------
         # ALLOWED if not applied to time field. Same reasoning as $nor.
         #
-        #  ALLOWED (negates value constraint):
-        #   {"value": {"$not": {"$lt": 0}}}   — equivalent to value >= 0
+        # [OK] ALLOWED (negates value constraint):
+        #   {"value": {"$not": {"$lt": 0}}}   - equivalent to value >= 0
         #
-        #  REJECTED (negates time constraint):
+        # [X] REJECTED (negates time constraint):
         #   {"timestamp": {"$not": {"$lt": "2024-01-15"}}}
         #
         "$not",
     }
 )
 
+
 NEVER_ALLOWED: frozenset[str] = frozenset(
     {
-        # - Evaluation (unsafe) -------------------------
+        # -- Evaluation (unsafe) ------------------------------------------------------
         # $expr and $where cannot be statically analyzed for safety.
         #
         # $expr can contain arbitrary aggregation expressions:
@@ -274,18 +278,19 @@ NEVER_ALLOWED: frozenset[str] = frozenset(
         #
         "$expr",
         "$where",
-        # - Text Search -----------------------------
+        # -- Text Search --------------------------------------------------------------
         # $text uses text indexes and corpus-wide IDF scoring.
-        # Not typical for time-series - XLR8 is for sensor data, not full-text search
+        # Splitting the corpus changes term frequencies and relevance scores.
+        #
+        #   {"$text": {"$search": "mongodb performance tuning"}}
         #
         "$text",
-        # - Atlas Search ----------------------------
+        # -- Atlas Search -------------------------------------------------------------
         # Atlas-specific full-text and vector search operators.
-        # Not typical for time-series - XLR8 is for sensor data, not full-text search
         #
         "$search",
         "$vectorSearch",
-        # - Geospatial -----------------------------
+        # -- Geospatial ---------------------------------------------------------------
         # Geospatial operators require special indexes and often involve
         # cross-document operations (sorting by distance, spatial joins).
         #
@@ -310,3 +315,19 @@ NEVER_ALLOWED: frozenset[str] = frozenset(
         "$uniqueDocs",
     }
 )
+
+# =============================================================================
+# VALIDATION RESULT
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationResult:
+    """Result of query validation for chunking."""
+
+    is_valid: bool
+    reason: str = ""
+    forbidden_operator: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.is_valid
