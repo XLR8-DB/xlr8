@@ -554,13 +554,13 @@ def validate_query_for_chunking(
         ... }, "recordedAt")
         (False, 'contains forbidden operator: $near')
     """
-    # Phase 1: Check for forbidden operators
-    # IT recurses the query tree and returns on first forbidden operator found.
+    # Check for forbidden operators
+    # Recurses the query tree and returns on first forbidden operator found.
     has_forbidden, op = has_forbidden_ops(query)
     if has_forbidden:
         return False, f"contains forbidden operator: {op}"
 
-    # Phase 2: Validate conditional operators
+    # Validate conditional operators
     result = check_conditional_operators(query, time_field)
     if not result:
         return False, result.reason

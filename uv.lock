@@ -278,6 +278,12 @@ wheels = [
 ]
 
 [[package]]
+name = "pymongo"
+version = "3.12.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/f2/f3e8be03c9994354a5e6c542b6cd76550127f202fcc3a328e1324ee68317/pymongo-3.12.0.tar.gz", hash = "sha256:b88d1742159bc93a078733f9789f563cef26f5e370eba810476a71aa98e5fbc2", size = 818554, upload-time = "2021-07-13T23:11:18.936Z" }
+
+[[package]]
 name = "pytest"
 version = "9.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -403,6 +409,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pyarrow" },
+    { name = "pymongo" },
 ]
 
 [package.dev-dependencies]
@@ -414,7 +421,10 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "pyarrow", specifier = "==11.0.0" }]
+requires-dist = [
+    { name = "pyarrow", specifier = "==11.0.0" },
+    { name = "pymongo", specifier = "==3.12.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

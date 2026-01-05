@@ -10,6 +10,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "pyarrow==11.0.0",
+    "pymongo==3.12.0", #TODO: change this to >= when ready to publish
 ]
 
 [tool.hatch.build.targets.wheel]
