@@ -146,7 +146,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 _all__ = [
     # Classification sets
@@ -165,6 +165,8 @@ _all__ = [
     "normalize_datetime",
     "normalize_query",
     "extract_time_bounds_recursive",
+    # Main entry point
+    "is_chunkable_query",
     # Internal (exported for testing)
     "_or_depth",
     "_references_field",
@@ -828,7 +830,7 @@ def normalize_query(query: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, bo
     flags = {
         "multiple_or": or_count > 1,
         "nested_or": max_or_depth > 1,
-        "complex_negation": False,  # Checked in Phase 4
+        "complex_negation": False,  # Checked later by check_negation_safety()
     }
 
     return normalized, flags
@@ -1047,3 +1049,211 @@ def extract_time_bounds_recursive(
             return None, has_time_ref
 
     return merged, has_time_ref
+
+
+def check_negation_safety(query: Dict[str, Any], time_field: str) -> Tuple[bool, str]:
+    """
+    Check if negation operators safely avoid time field.
+
+    Ensures $nor, $not, $ne, $nin don't reference time field.
+
+    Args:
+        query: MongoDB find() filter
+        time_field: Name of time field
+
+    Returns:
+        Tuple of (is_safe, rejection_reason)
+    """
+
+    def references_time_field(obj: Any, depth: int = 0) -> bool:
+        """Check if query references time field at any nesting level."""
+        if depth > 10:  # Prevent infinite recursion
+            return False
+
+        if not isinstance(obj, dict):
+            return False
+
+        if time_field in obj:
+            return True
+
+        for key, value in obj.items():
+            if isinstance(value, dict):
+                if references_time_field(value, depth + 1):
+                    return True
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        if references_time_field(item, depth + 1):
+                            return True
+
+        return False
+
+    def find_time_negations(obj: Any) -> List[str]:
+        """Find negation operators applied to time field."""
+        if not isinstance(obj, dict):
+            return []
+
+        negations = []
+
+        if time_field in obj:
+            time_value = obj[time_field]
+            if isinstance(time_value, dict):
+                for op in ["$ne", "$nin", "$not"]:
+                    if op in time_value:
+                        negations.append(op)
+
+        for key, value in obj.items():
+            if isinstance(value, dict):
+                negations.extend(find_time_negations(value))
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        negations.extend(find_time_negations(item))
+
+        return negations
+
+    # Check $nor
+    if "$nor" in query:
+        for branch in query["$nor"]:
+            if isinstance(branch, dict) and references_time_field(branch):
+                return False, f"$nor references time field '{time_field}'"
+
+    # Check $not, $ne, $nin on time field
+    unsafe = find_time_negations(query)
+    if unsafe:
+        return False, f"Negation operators on time field: {', '.join(set(unsafe))}"
+
+    return True, ""
+
+
+# =============================================================================
+# MAIN ENTRY POINT
+# =============================================================================
+
+
+def is_chunkable_query(
+    query: Dict[str, Any], time_field: str
+) -> Tuple[bool, str, Tuple[Optional[datetime], Optional[datetime]]]:
+    """
+    Determine if query can be chunked for parallel execution.
+
+    A query is chunkable if:
+        1. Contains no forbidden operators (geospatial, text, $expr, etc.)
+        2. Conditional operators used safely ($or depth ≤1, no $not on time field)
+        3. Has extractable time bounds (both lower and upper)
+        4. No negations on time field ($nor/$not/$ne/$nin)
+
+    Args:
+        query: MongoDB find() filter
+        time_field: Name of time field for chunking
+
+    Returns:
+        Tuple of (is_chunkable, reason_if_not, (lo, hi))
+
+    Examples:
+        # Simple query - chunkable
+        >>> is_chunkable_query({
+        ...     "account_id": ObjectId("..."),
+        ...     "device_id": {"$in": [ObjectId("..."), ...]},
+        ...     "recordedAt": {"$gte": t1, "$lt": t2}
+        ... }, "recordedAt")
+        (True, '', (t1, t2))
+
+        # $or query - chunkable
+        >>> is_chunkable_query({
+        ...     "$or": [
+        ...         {"sensor": "A", "recordedAt": {"$gte": t1, "$lt": t2}},
+        ...         {"sensor": "B", "recordedAt": {"$gte": t3, "$lt": t4}}
+        ...     ]
+        ... }, "recordedAt")
+        (True, '', (min(t1, t3), max(t2, t4)))
+
+        # Nested $and with $or - NOW chunkable!
+        >>> is_chunkable_query({
+        ...     "$and": [
+        ...         {"account_id": "123"},
+        ...         {"$and": [
+        ...             {"recordedAt": {"$gte": t1, "$lt": t2}},
+        ...             {"$or": [{"region": "US"}, {"region": "EU"}]}
+        ...         ]}
+        ...     ]
+        ... }, "recordedAt")
+        (True, '', (t1, t2))
+
+        # Multiple $or - NOW chunkable (single bracket, time-chunked)!
+        >>> is_chunkable_query({
+        ...     "$and": [
+        ...         {"$or": [{"region": "US"}, {"region": "EU"}]},
+        ...         {"$or": [{"sensor": "A"}, {"sensor": "B"}]}
+        ...     ],
+        ...     "recordedAt": {"$gte": t1, "$lt": t2}
+        ... }, "recordedAt")
+        (True, '', (t1, t2))
+    """
+    # Normalize query structure
+    normalized, complexity_flags = normalize_query(query)
+
+    # Validate operators
+    # Check nested $or (reject if depth > 1)
+    if complexity_flags["nested_or"]:
+        return False, "nested $or operators (depth > 1) not supported", (None, None)
+
+    # Check for empty $or array (matches no documents)
+    if (
+        "$or" in normalized
+        and isinstance(normalized.get("$or"), list)
+        and len(normalized["$or"]) == 0
+    ):
+        return False, "$or with empty array matches no documents", (None, None)
+
+    # Check forbidden operators
+    has_forbidden, op = has_forbidden_ops(normalized)
+    if has_forbidden:
+        return False, f"contains forbidden operator: {op}", (None, None)
+
+    # Check conditional operators
+    result = check_conditional_operators(normalized, time_field)
+    if not result:
+        return False, result.reason, (None, None)
+
+    # Extract time bounds
+    time_bounds, has_time_ref = extract_time_bounds_recursive(normalized, time_field)
+
+    if not has_time_ref:
+        return False, "no time field reference found", (None, None)
+
+    if time_bounds is None:
+        # More specific error messages based on the query structure
+        if "$or" in normalized:
+            # Check if $or has unbounded/partial branches
+            reason = (
+                "$or query has unbounded or partial time constraints "
+                "in one or more branches"
+            )
+        elif "$ne" in str(normalized) or "$nin" in str(normalized):
+            reason = "query contains negation operators ($ne/$nin) on time field"
+        elif "$in" in str(normalized) and "[]" in str(normalized):
+            reason = "query contains empty $in array on time field"
+        else:
+            reason = "no complete time range (invalid or contradictory bounds)"
+        return False, reason, (None, None)
+
+    lo, hi = time_bounds
+
+    # Validate bounds are sensible
+    if lo >= hi:
+        return (
+            False,
+            (
+                "invalid time range: lower bound >= upper bound "
+                "(contradictory constraints)"
+            ),
+            (None, None),
+        )
+
+    # Check negation safety
+    is_safe, reason = check_negation_safety(normalized, time_field)
+    if not is_safe:
+        return False, reason, (None, None)
+
+    return True, "", (lo, hi)
