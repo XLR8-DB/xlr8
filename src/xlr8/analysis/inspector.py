@@ -618,7 +618,7 @@ def _or_depth(obj: Any, current: int = 0) -> int:
 
 
 def check_conditional_operators(
-    query: dict[str, Any], time_field: str
+    query: Dict[str, Any], time_field: str
 ) -> ValidationResult:
     """
     Validate CONDITIONAL operators are used safely.
@@ -660,7 +660,7 @@ def check_conditional_operators(
         return ValidationResult(False, f"nested $or (depth {depth} > 1)")
 
     # Check for empty $or array
-    def check_empty_or(obj: Any) -> str | None:
+    def check_empty_or(obj: Any) -> Optional[str]:
         if isinstance(obj, dict):
             for key, value in obj.items():
                 if key == "$or" and isinstance(value, list) and len(value) == 0:
@@ -680,7 +680,7 @@ def check_conditional_operators(
         return ValidationResult(False, error)
 
     # Check $nor doesn't reference time field
-    def check_tree(obj: Any, parent_key: str | None = None) -> str | None:
+    def check_tree(obj: Any, parent_key: Optional[str] = None) -> Optional[str]:
         if isinstance(obj, dict):
             for key, value in obj.items():
                 if key == "$nor" and isinstance(value, list):
@@ -704,8 +704,8 @@ def check_conditional_operators(
 
 
 def validate_query_for_chunking(
-    query: dict[str, Any], time_field: str
-) -> tuple[bool, str]:
+    query: Dict[str, Any], time_field: str
+) -> Tuple[bool, str]:
     """
     Validate query operators are compatible with chunking.
 
@@ -738,23 +738,23 @@ def validate_query_for_chunking(
         ... }, "timestamp")
         (True, '')
 
-        # Rejected: contains $expr
+        # Cannot chunk: contains $expr (requires full dataset)
         >>> validate_query_for_chunking({
         ...     "$expr": {"$gt": ["$endTime", "$startTime"]}
         ... }, "timestamp")
-        (False, 'contains forbidden operator: $expr')
+        (False, "operator '$expr' requires full dataset (cannot chunk)")
 
-        # Rejected: geospatial operator
+        # Cannot chunk: geospatial operator
         >>> validate_query_for_chunking({
         ...     "location": {"$near": {"$geometry": {...}}}
         ... }, "timestamp")
-        (False, 'contains forbidden operator: $near')
+        (False, "operator '$near' requires full dataset (cannot chunk)")
     """
-    # Check for forbidden operators
+    # Check for operators requiring full dataset (cannot chunk/parallelize)
     # Recurses the query tree and returns on first forbidden operator found.
     has_forbidden, op = has_forbidden_ops(query)
     if has_forbidden:
-        return False, f"contains forbidden operator: {op}"
+        return False, f"operator '{op}' requires full dataset (cannot chunk)"
 
     # Validate conditional operators
     result = check_conditional_operators(query, time_field)
