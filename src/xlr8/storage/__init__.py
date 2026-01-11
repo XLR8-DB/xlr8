@@ -9,8 +9,9 @@ Provides efficient storage components for MongoDB query results:
 - Cache: Query-specific cache management with deterministic hashing
 """
 
-from .cache import hash_query
+from .cache import CacheManager, hash_query
 
 __all__ = [
+    "CacheManager",
     "hash_query",
 ]
