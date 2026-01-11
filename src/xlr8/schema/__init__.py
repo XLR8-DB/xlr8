@@ -1,7 +1,7 @@
 """
 Schema system for XLR8.
 
-Provides types and schema definitions for MongoDB documents.
+Provides types, schema definitions, and value encoding for MongoDB documents.
 """
 
 # Import types module for Types.X syntax

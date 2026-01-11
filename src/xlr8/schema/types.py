@@ -1,25 +1,26 @@
 """
 Type definitions for XLR8's schema system.
 
-This module provides type classes that define how MongoDB BSON values 
-are mapped to Parquet types.These types form the foundation of XLR8's 
+This module provides type classes that define how MongoDB BSON values
+are mapped to Parquet types.These types form the foundation of XLR8's
 schema system, enabling efficient storage and querying of MongoDB data.
 
 Key Features:
 - **Type Safety**: Explicit type definitions for MongoDB document schemas
-- **Arrow Integration**: Seamless conversion between MongoDB BSON and Apache 
+- **Arrow Integration**: Seamless conversion between MongoDB BSON and Apache
 Arrow types
 - **Flexible Schema**: Support for both strict and flexible schemas via Types.Any
 
 Supported Types:
-- Primitives: String, Int, Float, Bool, Timestamp, ObjectId, TODO: include all BSON types
+- Primitives: String, Int, Float, Bool, Timestamp, ObjectId
+  TODO: include all BSON types
 - Complex: Struct (nested documents), List (arrays)
 
 Schema Behavior:
 - Fields defined in the schema are type-checked and converted to Arrow types
 - Fields not in the schema are discarded when writing to Parquet.
-- Types.Any provides a flexible escape hatch for dynamic/unknown fields 
-which are stored as structs in Parquet and later decoded back to original 
+- Types.Any provides a flexible escape hatch for dynamic/unknown fields
+which are stored as structs in Parquet and later decoded back to original
 BSON types via the Rust backend.
 
 """
@@ -27,6 +28,7 @@ BSON types via the Rust backend.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, Optional
+
 import pyarrow as pa
 
 
@@ -58,23 +60,24 @@ class String(BaseType):
 
     def __eq__(self, other) -> bool:
         return isinstance(other, String)
-    
+
     def __hash__(self) -> int:
         return hash(self.__class__.__name__)
 
-# TODO: Support Int32 vs Int64 based on schema definition
+
 class Int(BaseType):
     """Integer type (always 64-bit)."""
 
     def to_arrow(self) -> pa.DataType:
         return pa.int64()
 
-# TODO: Support Float32 vs Float64 based on schema definition
+
 class Float(BaseType):
     """Floating-point type (always 64-bit)."""
 
     def to_arrow(self) -> pa.DataType:
         return pa.float64()
+
 
 class Bool(BaseType):
     """Boolean type."""
@@ -84,7 +87,7 @@ class Bool(BaseType):
 
     def __eq__(self, other) -> bool:
         return isinstance(other, Bool)
-    
+
     def __hash__(self) -> int:
         return hash(self.__class__.__name__)
 
@@ -92,14 +95,41 @@ class Bool(BaseType):
 @dataclass(frozen=True)
 class Timestamp(BaseType):
     """Timestamp type."""
+
     unit: str = "ns"
     tz: Optional[str] = "UTC"
 
     def to_arrow(self) -> pa.DataType:
         return pa.timestamp(self.unit, tz=self.tz)
-    def __post_init__(self):
-        if self.unit not in ("s", "ms", "us", "ns"):
-            raise ValueError("Timestamp unit must be one of 's', 'ms', 'us', 'ns'")
+
+
+@dataclass(frozen=True)
+class DateTime(BaseType):
+    """
+    DateTime type - convenience wrapper for MongoDB ISODate fields.
+
+    Automatically uses millisecond precision (MongoDB's standard format).
+    For custom precision, use Timestamp() directly.
+
+    Args:
+        tz: Timezone (default: "UTC")
+
+    Example:
+        >>> Schema(
+        ...     time_field="createdAt",
+        ...     fields={
+        ...         "createdAt": Types.DateTime(),  # MongoDB ISODate
+        ...         "customTime": Types.Timestamp("s", tz="UTC"),  # Custom unit
+        ...     }
+        ... )
+    """
+
+    tz: Optional[str] = "UTC"
+
+    def to_arrow(self) -> pa.DataType:
+        # MongoDB stores ISODate as milliseconds since epoch
+        return pa.timestamp("ms", tz=self.tz)
+
 
 class ObjectId(BaseType):
     """MongoDB ObjectId type (stored as string in Parquet)."""
@@ -136,25 +166,27 @@ class Any(BaseType):
 
     def to_arrow(self) -> pa.DataType:
         """Return the Arrow struct type for polymorphic values.
-        
+
         This schema must match the Rust backend's encode_any_values_to_arrow
         and decode_any_struct_arrow functions exactly.
         """
-        return pa.struct([
-            ("float_value", pa.float64()),
-            ("int32_value", pa.int32()),
-            ("int64_value", pa.int64()),
-            ("string_value", pa.string()),
-            ("objectid_value", pa.string()),
-            ("decimal128_value", pa.string()),
-            ("regex_value", pa.string()),
-            ("binary_value", pa.string()),
-            ("document_value", pa.string()),
-            ("array_value", pa.string()),
-            ("bool_value", pa.bool_()),
-            ("datetime_value", pa.timestamp("ms")),
-            ("null_value", pa.bool_()),
-        ])
+        return pa.struct(
+            [
+                ("float_value", pa.float64()),
+                ("int32_value", pa.int32()),
+                ("int64_value", pa.int64()),
+                ("string_value", pa.string()),
+                ("objectid_value", pa.string()),
+                ("decimal128_value", pa.string()),
+                ("regex_value", pa.string()),
+                ("binary_value", pa.string()),
+                ("document_value", pa.string()),
+                ("array_value", pa.string()),
+                ("bool_value", pa.bool_()),
+                ("datetime_value", pa.timestamp("ms")),
+                ("null_value", pa.bool_()),
+            ]
+        )
 
     def __eq__(self, other) -> bool:
         return isinstance(other, Any)
@@ -171,10 +203,9 @@ class Struct(BaseType):
         self.fields = fields
 
     def to_arrow(self) -> pa.DataType:
-        return pa.struct([
-            (name, field_type.to_arrow())
-            for name, field_type in self.fields.items()
-        ])
+        return pa.struct(
+            [(name, field_type.to_arrow()) for name, field_type in self.fields.items()]
+        )
 
     def __repr__(self) -> str:
         field_str = ", ".join(f"{k}: {v}" for k, v in self.fields.items())

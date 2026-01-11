@@ -8,11 +8,11 @@ Tests schema creation, validation, and operations including:
 - Schema equality
 """
 
-from typing import Any
-
-import pytest
 import pyarrow as pa
-from xlr8.schema import Schema, types as Types
+import pytest
+
+from xlr8.schema import Schema
+from xlr8.schema import types as Types
 
 
 class TestSchemaCreation:
@@ -25,10 +25,10 @@ class TestSchemaCreation:
             fields={
                 "timestamp": Types.Timestamp("ms", tz="UTC"),
                 "value": Types.Float(),
-                "sensor_id": Types.String()
-            }
+                "sensor_id": Types.String(),
+            },
         )
-        
+
         assert schema.time_field == "timestamp"
         assert len(schema.fields) == 3
         assert isinstance(schema.fields["timestamp"], Types.Timestamp)
@@ -38,30 +38,23 @@ class TestSchemaCreation:
     def test_schema_with_avg_doc_size(self):
         """Test schema with custom avg_doc_size_bytes."""
         schema = Schema(
-            time_field="ts",
-            fields={"ts": Types.Timestamp()},
-            avg_doc_size_bytes=1000
+            time_field="ts", fields={"ts": Types.Timestamp()}, avg_doc_size_bytes=1000
         )
-        
+
         assert schema.avg_doc_size_bytes == 1000
 
     def test_schema_default_avg_doc_size(self):
         """Test schema uses default avg_doc_size_bytes."""
-        schema = Schema(
-            time_field="ts",
-            fields={"ts": Types.Timestamp()}
-        )
-        
+        schema = Schema(time_field="ts", fields={"ts": Types.Timestamp()})
+
         assert schema.avg_doc_size_bytes == 500  # Default
 
     def test_schema_with_flatten_nested(self):
         """Test schema with flatten_nested configuration."""
         schema = Schema(
-            time_field="ts",
-            fields={"ts": Types.Timestamp()},
-            flatten_nested=False
+            time_field="ts", fields={"ts": Types.Timestamp()}, flatten_nested=False
         )
-        
+
         assert schema.flatten_nested is False
 
 
@@ -71,33 +64,30 @@ class TestSchemaValidation:
     def test_schema_missing_time_field(self):
         """Test that schema requires time_field to be in fields."""
         with pytest.raises(ValueError, match="must be present in fields"):
-            Schema(
-                time_field="timestamp",
-                fields={"value": Types.Float()}
-            )
+            Schema(time_field="timestamp", fields={"value": Types.Float()})
 
     def test_schema_time_field_not_timestamp(self):
         """Test that time_field must be Timestamp type."""
-        with pytest.raises(ValueError, match="must be Timestamp type"):
+        with pytest.raises(ValueError, match="must be Timestamp or DateTime type"):
             Schema(
                 time_field="timestamp",
                 fields={
                     "timestamp": Types.String(),  # Wrong type!
-                    "value": Types.Float()
-                }
+                    "value": Types.Float(),
+                },
             )
 
     def test_schema_time_field_correct_type(self):
         """Test that Timestamp type is accepted for time_field."""
         schema = Schema(
-            time_field="createdAt",
+            time_field="recordedAt",
             fields={
-                "createdAt": Types.Timestamp("ms", tz="UTC"),
-                "value": Types.Float()
-            }
+                "recordedAt": Types.Timestamp("ms", tz="UTC"),
+                "value": Types.Float(),
+            },
         )
-        
-        assert schema.time_field == "createdAt"
+
+        assert schema.time_field == "recordedAt"
 
 
 class TestSchemaArrowConversion:
@@ -111,10 +101,10 @@ class TestSchemaArrowConversion:
                 "ts": Types.Timestamp("ms", tz="UTC"),
                 "name": Types.String(),
                 "count": Types.Int(),
-                "active": Types.Bool()
-            }
+                "active": Types.Bool(),
+            },
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         assert isinstance(arrow_schema, pa.Schema)
         assert len(arrow_schema) == 4
@@ -126,13 +116,9 @@ class TestSchemaArrowConversion:
     def test_to_arrow_schema_with_any(self):
         """Test Arrow schema with Any type (becomes struct)."""
         schema = Schema(
-            time_field="ts",
-            fields={
-                "ts": Types.Timestamp(),
-                "data": Types.Any()
-            }
+            time_field="ts", fields={"ts": Types.Timestamp(), "data": Types.Any()}
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         assert pa.types.is_struct(arrow_schema.field("data").type)
 
@@ -142,13 +128,12 @@ class TestSchemaArrowConversion:
             time_field="ts",
             fields={
                 "ts": Types.Timestamp(),
-                "metadata": Types.Struct({
-                    "user_id": Types.String(),
-                    "session_id": Types.Int()
-                })
-            }
+                "metadata": Types.Struct(
+                    {"user_id": Types.String(), "session_id": Types.Int()}
+                ),
+            },
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         metadata_field = arrow_schema.field("metadata")
         assert pa.types.is_struct(metadata_field.type)
@@ -159,12 +144,9 @@ class TestSchemaArrowConversion:
         """Test Arrow schema with List type."""
         schema = Schema(
             time_field="ts",
-            fields={
-                "ts": Types.Timestamp(),
-                "tags": Types.List(Types.String())
-            }
+            fields={"ts": Types.Timestamp(), "tags": Types.List(Types.String())},
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         tags_field = arrow_schema.field("tags")
         assert pa.types.is_list(tags_field.type)
@@ -181,23 +163,19 @@ class TestSchemaFieldAccess:
             fields={
                 "ts": Types.Timestamp(),
                 "value": Types.Float(),
-                "id": Types.String()
-            }
+                "id": Types.String(),
+            },
         )
-        
+
         field_names = schema.get_field_names()
         assert set(field_names) == {"ts", "value", "id"}
 
     def test_has_field(self):
         """Test has_field() checks field existence."""
         schema = Schema(
-            time_field="ts",
-            fields={
-                "ts": Types.Timestamp(),
-                "value": Types.Float()
-            }
+            time_field="ts", fields={"ts": Types.Timestamp(), "value": Types.Float()}
         )
-        
+
         assert schema.has_field("ts") is True
         assert schema.has_field("value") is True
         assert schema.has_field("missing") is False
@@ -209,21 +187,18 @@ class TestSchemaFieldAccess:
             fields={
                 "ts": Types.Timestamp("ms", tz="UTC"),
                 "value": Types.Float(),
-                "name": Types.String()
-            }
+                "name": Types.String(),
+            },
         )
-        
+
         assert isinstance(schema.get_field_type("ts"), Types.Timestamp)
         assert isinstance(schema.get_field_type("value"), Types.Float)
         assert isinstance(schema.get_field_type("name"), Types.String)
 
     def test_get_field_type_missing(self):
         """Test get_field_type() raises KeyError for missing field."""
-        schema = Schema(
-            time_field="ts",
-            fields={"ts": Types.Timestamp()}
-        )
-        
+        schema = Schema(time_field="ts", fields={"ts": Types.Timestamp()})
+
         with pytest.raises(KeyError):
             schema.get_field_type("missing")
 
@@ -236,23 +211,19 @@ class TestSchemaFieldAccess:
                 "value": Types.Float(),
                 "data": Types.Any(),
                 "metadata": Types.Any(),
-                "name": Types.String()
-            }
+                "name": Types.String(),
+            },
         )
-        
+
         any_fields = schema.get_any_fields()
         assert set(any_fields) == {"data", "metadata"}
 
     def test_get_any_fields_empty(self):
         """Test get_any_fields() returns empty list when no Any fields."""
         schema = Schema(
-            time_field="ts",
-            fields={
-                "ts": Types.Timestamp(),
-                "value": Types.Float()
-            }
+            time_field="ts", fields={"ts": Types.Timestamp(), "value": Types.Float()}
         )
-        
+
         any_fields = schema.get_any_fields()
         assert any_fields == []
 
@@ -264,12 +235,9 @@ class TestSchemaSpec:
         """Test to_spec() generates JSON-serializable dict."""
         schema = Schema(
             time_field="ts",
-            fields={
-                "ts": Types.Timestamp("ms", tz="UTC"),
-                "value": Types.Float()
-            }
+            fields={"ts": Types.Timestamp("ms", tz="UTC"), "value": Types.Float()},
         )
-        
+
         spec = schema.to_spec()
         assert isinstance(spec, dict)
         assert spec["version"] == 1
@@ -288,13 +256,13 @@ class TestSchemaSpec:
                 "count": Types.Int(),
                 "active": Types.Bool(),
                 "data": Types.Any(),
-                "id": Types.ObjectId()
-            }
+                "id": Types.ObjectId(),
+            },
         )
-        
-        spec: dict[str, Any] = schema.to_spec()
+
+        spec = schema.to_spec()
         fields_by_name = {f["name"]: f for f in spec["fields"]}
-        
+
         assert fields_by_name["ts"]["kind"] == "timestamp"
         assert fields_by_name["name"]["kind"] == "string"
         assert fields_by_name["count"]["kind"] == "int64"
@@ -305,12 +273,9 @@ class TestSchemaSpec:
     def test_to_spec_timestamp_details(self):
         """Test to_spec() includes Timestamp unit and timezone."""
         schema = Schema(
-            time_field="ts",
-            fields={
-                "ts": Types.Timestamp("ms", tz="America/New_York")
-            }
+            time_field="ts", fields={"ts": Types.Timestamp("ms", tz="America/New_York")}
         )
-        
+
         spec = schema.to_spec()
         ts_field = spec["fields"][0]
         assert ts_field["unit"] == "ms"
@@ -323,13 +288,9 @@ class TestSchemaRepr:
     def test_schema_repr(self):
         """Test schema __repr__ includes time_field and fields."""
         schema = Schema(
-            time_field="ts",
-            fields={
-                "ts": Types.Timestamp(),
-                "value": Types.Float()
-            }
+            time_field="ts", fields={"ts": Types.Timestamp(), "value": Types.Float()}
         )
-        
+
         repr_str = repr(schema)
         assert "Schema" in repr_str
         assert "time_field='ts'" in repr_str
@@ -346,18 +307,21 @@ class TestSchemaComplexTypes:
             time_field="ts",
             fields={
                 "ts": Types.Timestamp(),
-                "data": Types.Struct({
-                    "user": Types.Struct({
-                        "profile": Types.Struct({
-                            "name": Types.String(),
-                            "age": Types.Int()
-                        })
-                    }),
-                    "tags": Types.List(Types.String())
-                })
-            }
+                "data": Types.Struct(
+                    {
+                        "user": Types.Struct(
+                            {
+                                "profile": Types.Struct(
+                                    {"name": Types.String(), "age": Types.Int()}
+                                )
+                            }
+                        ),
+                        "tags": Types.List(Types.String()),
+                    }
+                ),
+            },
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         assert pa.types.is_struct(arrow_schema.field("data").type)
 
@@ -368,15 +332,17 @@ class TestSchemaComplexTypes:
             fields={
                 "ts": Types.Timestamp(),
                 "events": Types.List(
-                    Types.Struct({
-                        "event_type": Types.String(),
-                        "timestamp": Types.Timestamp(),
-                        "data": Types.Any()
-                    })
-                )
-            }
+                    Types.Struct(
+                        {
+                            "event_type": Types.String(),
+                            "timestamp": Types.Timestamp(),
+                            "data": Types.Any(),
+                        }
+                    )
+                ),
+            },
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         events_field = arrow_schema.field("events")
         assert pa.types.is_list(events_field.type)
@@ -395,13 +361,13 @@ class TestSchemaComplexTypes:
                 "objectid_field": Types.ObjectId(),
                 "any_field": Types.Any(),
                 "struct_field": Types.Struct({"x": Types.Int()}),
-                "list_field": Types.List(Types.String())
-            }
+                "list_field": Types.List(Types.String()),
+            },
         )
-        
+
         arrow_schema = schema.to_arrow_schema()
         assert len(arrow_schema) == 9
-        
+
         # Verify all conversions work
         for field_name in schema.get_field_names():
             field_type = arrow_schema.field(field_name).type

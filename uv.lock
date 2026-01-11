@@ -256,6 +256,19 @@ wheels = [
 ]
 
 [[package]]
+name = "polars"
+version = "0.15.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/fd/56/9a517b494a25e633a83bd83f868c3806f0675014b24aef41defa62c0835f/polars-0.15.1.tar.gz", hash = "sha256:a00ef0f53752ca4a7e33d92fb71ee2ce4e1d336b54e937fadc94dfb9c66fd606", size = 1215690, upload-time = "2022-11-26T12:59:39.749Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b1/fe/07733814ca71772b042d50584b623b749fa1157d841253e2ea6cdf4673bc/polars-0.15.1-cp37-abi3-macosx_10_7_x86_64.whl", hash = "sha256:a8f94c76306f9742c7742d81fd5bbe2d8481827614714d121877b396bf17e5ae", size = 13429967, upload-time = "2022-11-26T13:20:55.392Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/f8/e83c20bec91fb595cfb6e908abc038d470569cfa0e98e6c367a5b93daf61/polars-0.15.1-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:2042ae1e80d6b5a4a60dbeffc68bd3063b588a28c2898561f2c0e93a81c666c4", size = 12001985, upload-time = "2022-11-26T13:14:58.36Z" },
+    { url = "https://files.pythonhosted.org/packages/eb/97/c02c1b1e73455c21238d3024ae0a05219b8c04e33a090147b70e67af1957/polars-0.15.1-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:5bf736ca0e4d971154648f2a23ac840f128a74c5fc1e7dcd72b456c55bcf0d34", size = 12394109, upload-time = "2022-11-26T13:00:37.987Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/55/c8d6ff4d5726b3f2ff1d0ecfb80d5cc1179b09f4336b4c392335b439bb86/polars-0.15.1-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b89afb8e811f469a521bc1a61479953a1ef468ee6237572e2cc2a4a038407666", size = 14179643, upload-time = "2022-11-26T12:59:36.215Z" },
+    { url = "https://files.pythonhosted.org/packages/70/ea/0e81f064b833248610d0645c468de1acd1367d84d490c61e49971c2a85a8/polars-0.15.1-cp37-abi3-win_amd64.whl", hash = "sha256:deeac0a8184d1bd6791c476c905364c1e4f9e924203b1f33e6a5a0f46877706e", size = 14917351, upload-time = "2022-11-26T13:12:23.747Z" },
+]
+
+[[package]]
 name = "pre-commit"
 version = "4.5.0"
 source = { registry = "https://pypi.org/simple" }
@@ -458,6 +471,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "pandas" },
+    { name = "polars" },
     { name = "pyarrow" },
     { name = "pymongo" },
 ]
@@ -473,6 +487,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pandas", specifier = "==1.5.0" },
+    { name = "polars", specifier = "==0.15.1" },
     { name = "pyarrow", specifier = "==10.0.1" },
     { name = "pymongo", specifier = "==3.12.0" },
 ]

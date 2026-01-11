@@ -1,12 +1,15 @@
 """
 Schema definition for XLR8.
 
-Schema describes the structure of MongoDB documents in a collection and how they map to Arrow/Parquet.
+Schema describes the structure of MongoDB documents and how they map to Arrow/Parquet.
 """
 
 from typing import Dict, List
+
 import pyarrow as pa
-from .types import BaseType, Timestamp, Any as AnyType
+
+from .types import Any as AnyType
+from .types import BaseType, DateTime, Timestamp
 
 
 class Schema:
@@ -14,12 +17,9 @@ class Schema:
     Defines the structure of MongoDB documents for XLR8 acceleration.
 
     Schema is required to:
-    - Query planning and optimization using avg_doc_size_bytes.
-    - Chunking data by time_field for parallelization.
-    - Convert MongoDB documents to Arrow tables.
-    - Store data efficiently in Parquet.
-    - Reconstruct DataFrames with correct types.
-    - Stream data to data lake among other use cases.
+    - Convert MongoDB documents to Arrow tables
+    - Store data efficiently in Parquet
+    - Reconstruct DataFrames with correct types
 
     Example:
         ```python
@@ -72,9 +72,9 @@ class Schema:
             )
 
         time_field_type = self.fields[self.time_field]
-        if not isinstance(time_field_type, Timestamp):
+        if not isinstance(time_field_type, (Timestamp, DateTime)):
             raise ValueError(
-                f"time_field '{self.time_field}' must be Timestamp type, "
+                f"time_field '{self.time_field}' must be Timestamp or DateTime type, "
                 f"got {type(time_field_type).__name__}"
             )
 
@@ -85,10 +85,9 @@ class Schema:
         Returns:
             PyArrow schema object
         """
-        return pa.schema([
-            (name, field_type.to_arrow())
-            for name, field_type in self.fields.items()
-        ])
+        return pa.schema(
+            [(name, field_type.to_arrow()) for name, field_type in self.fields.items()]
+        )
 
     def get_any_fields(self) -> List[str]:
         """
@@ -155,9 +154,12 @@ class Schema:
 
         Returns:
             Dict containing schema version, time field, and field specifications
-            
+
         Example:
-            >>> schema = Schema(time_field="ts", fields={"ts": Timestamp("ms"), "value": Float()})
+            >>> schema = Schema(
+            ...     time_field="ts",
+            ...     fields={"ts": Timestamp("ms"), "value": Float()}
+            ... )
             >>> spec = schema.to_spec()
             >>> # Later: schema2 = Schema.from_spec(spec)
         """
@@ -167,18 +169,20 @@ class Schema:
         for name, f in self.fields.items():
             entry: Dict[str, object] = {"name": name}
 
-            if isinstance(f, Types.Timestamp):
+            if isinstance(f, (Types.Timestamp, Types.DateTime)):
+                # Both Timestamp and DateTime serialize the same way
+                # DateTime is just a convenience wrapper that defaults to "ms"
                 entry.update(
                     {
                         "kind": "timestamp",
-                        "unit": getattr(f, "unit", "ms"), # default to ms if not set
-                        "tz": getattr(f, "tz", "UTC") or "UTC", # default to UTC
+                        "unit": getattr(f, "unit", "ms"),
+                        "tz": getattr(f, "tz", "UTC") or "UTC",
                     }
                 )
             elif isinstance(f, Types.ObjectId):
                 entry.update({"kind": "objectid"})
             elif isinstance(f, Types.Any):
-                # Preserve Any() union/bitmap layout; the
+                # Preserve Any() union/bitmap layout; the concrete
                 # encoder decides how to materialize this.
                 any_layout: Dict[str, object] = {
                     "variants": [
@@ -202,15 +206,36 @@ class Schema:
                     any_layout["payload_field"] = payload_field
 
                 entry.update({"kind": "any", "any_layout": any_layout})
-            # TODO: Add support for int32, float32
             elif isinstance(f, Types.Int):
-                entry.update({"kind": "int64"}) 
+                entry.update({"kind": "int64"})
             elif isinstance(f, Types.Float):
                 entry.update({"kind": "float64"})
             elif isinstance(f, Types.String):
                 entry.update({"kind": "string"})
             elif isinstance(f, Types.Bool):
                 entry.update({"kind": "bool"})
+            elif isinstance(f, Types.List):
+                # List type - serialize with element type info
+                # Map element type to kind string
+                elem_type = f.element_type
+                if isinstance(elem_type, Types.Float):
+                    elem_kind = "float"
+                elif isinstance(elem_type, Types.Int):
+                    elem_kind = "int"
+                elif isinstance(elem_type, Types.String):
+                    elem_kind = "string"
+                elif isinstance(elem_type, Types.Bool):
+                    elem_kind = "bool"
+                elif isinstance(elem_type, Types.DateTime):
+                    elem_kind = "datetime"
+                elif isinstance(elem_type, Types.ObjectId):
+                    elem_kind = "objectid"
+                else:
+                    raise ValueError(
+                        f"Unsupported List element type: {type(elem_type).__name__}. "
+                        f"Supported types: Float, Int, String, Bool, DateTime, ObjectId"
+                    )
+                entry.update({"kind": f"list:{elem_kind}"})
             else:
                 # Conservative fallback: treat as json_blob-backed Any.
                 entry.update(
@@ -232,6 +257,9 @@ class Schema:
         }
 
     def __repr__(self) -> str:
-        field_lines = [f"  {name}: {field_type}" for name,
-                       field_type in self.fields.items()]
-        return f"Schema(time_field='{self.time_field}',\n" + "\n".join(field_lines) + "\n)"
+        field_lines = [
+            f"  {name}: {field_type}" for name, field_type in self.fields.items()
+        ]
+        return (
+            f"Schema(time_field='{self.time_field}',\n" + "\n".join(field_lines) + "\n)"
+        )
