@@ -68,7 +68,9 @@ WHY BRACKETS?
 ================================================================================
 """
 
-from typing import Set
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Dict, Optional, Set
 
 # =============================================================================
 # OVERLAP DETECTION HELPERS
@@ -116,3 +118,45 @@ OVERLAP_PRONE_OPERATORS: Set[str] = {
 
 # Operators that create negation/exclusion filters
 NEGATION_OPERATORS: Set[str] = {"$nin", "$ne", "$not", "$nor"}
+
+
+@dataclass
+class TimeRange:
+    """
+    Time range for a bracket.
+
+    Example:
+        TimeRange(
+            lo=datetime(2024, 1, 1, tzinfo=UTC),
+            hi=datetime(2024, 7, 1, tzinfo=UTC),
+            is_full=True  # Both lo and hi are specified
+        )
+    """
+
+    lo: Optional[datetime]
+    hi: Optional[datetime]
+    is_full: bool
+
+
+@dataclass
+class Bracket:
+    """
+    A unit of work for parallel execution.
+
+    Example:
+        Bracket(
+            static_filter={"account_id": ObjectId("123..."),
+                          "region_id": ObjectId("64a...")},
+            timerange=TimeRange(lo=2024-01-01, hi=2024-07-01, is_full=True)
+        )
+
+    This bracket will be converted to a MongoDB query:
+        {
+            "account_id": ObjectId("123..."),
+            "region_id": ObjectId("64a..."),
+            "timestamp": {"$gte": 2024-01-01, "$lt": 2024-07-01}
+        }
+    """
+
+    static_filter: Dict[str, Any]
+    timerange: TimeRange
