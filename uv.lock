@@ -273,18 +273,18 @@ wheels = [
 
 [[package]]
 name = "pyarrow"
-version = "11.0.0"
+version = "10.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/2c/e7/49cc11436f92a6a9001e4002fb8e5cd6733fc15a89a354cbc22b206a8171/pyarrow-11.0.0.tar.gz", hash = "sha256:5461c57dbdb211a632a48facb9b39bbeb8a7905ec95d768078525283caef5f6d", size = 1020639, upload-time = "2023-01-27T14:43:39.317Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/11/71/dd884e86aa92b2d602ee2064a485106ce5b447f8cae644f1a6f6a2e72016/pyarrow-10.0.1.tar.gz", hash = "sha256:1a14f57a5f472ce8234f2964cd5184cccaa8df7e04568c64edc33b23eb285dd5", size = 994148, upload-time = "2022-11-22T22:18:16.152Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/95/1b/c67e0d844d6a62fdfddff041f325d0a87edc7f7dbc7a93e051accb47c1a3/pyarrow-11.0.0-cp311-cp311-macosx_10_14_x86_64.whl", hash = "sha256:e217d001e6389b20a6759392a5ec49d670757af80101ee6b5f2c8ff0172e02ca", size = 24388742, upload-time = "2023-01-27T14:42:02.074Z" },
-    { url = "https://files.pythonhosted.org/packages/51/6b/218aa314c8ee3776cf1c91d338c5dfc2f940f233925a2e518419f66f9783/pyarrow-11.0.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:ad42bb24fc44c48f74f0d8c72a9af16ba9a01a2ccda5739a517aa860fa7e3d56", size = 22324814, upload-time = "2023-01-27T14:42:07.7Z" },
-    { url = "https://files.pythonhosted.org/packages/43/30/4f187a27bade0888bfe66bdc53444e33821c5fa53c607827c1ab92a1aea1/pyarrow-11.0.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:2d942c690ff24a08b07cb3df818f542a90e4d359381fbff71b8f2aea5bf58841", size = 32670244, upload-time = "2023-01-27T14:42:12.749Z" },
-    { url = "https://files.pythonhosted.org/packages/83/4a/d5cce2a703e0249e161b63b86f1676d08afcfe8186feccf5c55730ece1c2/pyarrow-11.0.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f010ce497ca1b0f17a8243df3048055c0d18dcadbcc70895d5baf8921f753de5", size = 34870932, upload-time = "2023-01-27T14:42:18.47Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/dc/e9c7979ff1785b2412757b7c46880f0119ca4ac92c0c7c25c28b0cd063f1/pyarrow-11.0.0-cp311-cp311-win_amd64.whl", hash = "sha256:2f51dc7ca940fdf17893227edb46b6784d37522ce08d21afc56466898cb213b2", size = 20537245, upload-time = "2023-01-27T14:42:22.947Z" },
+    { url = "https://files.pythonhosted.org/packages/f8/fe/4e2d2cd7e0d544018d7c7fee3dcee80303e16111605716592dd5333a2212/pyarrow-10.0.1-cp311-cp311-macosx_10_14_x86_64.whl", hash = "sha256:e3fe5049d2e9ca661d8e43fab6ad5a4c571af12d20a57dffc392a014caebef65", size = 24978297, upload-time = "2022-11-22T22:15:37.113Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/6e/915b7dfb7cfd2efd092b9b4d6579cb5848ba1dced3543bdd963df59ee2b5/pyarrow-10.0.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:254017ca43c45c5098b7f2a00e995e1f8346b0fb0be225f042838323bb55283c", size = 22924198, upload-time = "2022-11-22T22:15:43.421Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/87/a0849cd20c75dd832683fdad0b321e6428281f3f3053e01c588269ae5b89/pyarrow-10.0.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:70acca1ece4322705652f48db65145b5028f2c01c7e426c5d16a30ba5d739c24", size = 33558654, upload-time = "2022-11-22T22:15:51.102Z" },
+    { url = "https://files.pythonhosted.org/packages/81/53/385279a985567a8a909bf9365cd15fc87c26ebe7db60a7220e4eeb407c87/pyarrow-10.0.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:abb57334f2c57979a49b7be2792c31c23430ca02d24becd0b511cbe7b6b08649", size = 35844050, upload-time = "2022-11-22T22:15:59.425Z" },
+    { url = "https://files.pythonhosted.org/packages/90/69/9e0ea39bed0d281e84cc3cd4a693ebc86266b705d910af9cc939e66c5d03/pyarrow-10.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:1765a18205eb1e02ccdedb66049b0ec148c2a0cb52ed1fb3aac322dfc086a6ee", size = 20195202, upload-time = "2022-11-22T22:16:19.133Z" },
 ]
 
 [[package]]
@@ -473,7 +473,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "pandas", specifier = "==1.5.0" },
-    { name = "pyarrow", specifier = "==11.0.0" },
+    { name = "pyarrow", specifier = "==10.0.1" },
     { name = "pymongo", specifier = "==3.12.0" },
 ]
 

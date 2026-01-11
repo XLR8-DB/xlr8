@@ -9,7 +9,7 @@ description = "High-performance database read acceleration layer for MongoDB. Au
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pyarrow==11.0.0",
+    "pyarrow==10.0.1",  #TODO: change this to >= when ready to publish
     "pymongo==3.12.0", #TODO: change this to >= when ready to publish
     "pandas==1.5.0", #TODO: change this to >= when ready to publish
 ]
