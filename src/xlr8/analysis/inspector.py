@@ -1454,7 +1454,19 @@ def is_chunkable_query(
             mode=ChunkabilityMode.SINGLE, reason=result.reason, bounds=(lo, hi)
         )
 
-    # Step 6: To Be implemented - Check for $natural sort (SINGLE tier)
+    # Step 6: Check $natural sort (SINGLE tier - valid but not chunkable)
+    if sort_spec and has_natural_sort(sort_spec):
+        # Extract time bounds for single-worker execution
+        time_bounds, has_time_ref = extract_time_bounds_recursive(
+            normalized, time_field
+        )
+        lo, hi = time_bounds if time_bounds else (None, None)
+
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE,
+            reason="$natural sort requires insertion order (single-worker execution)",
+            bounds=(lo, hi),
+        )
     # Step 7: Extract time bounds
     time_bounds, has_time_ref = extract_time_bounds_recursive(normalized, time_field)
 
@@ -1505,3 +1517,73 @@ def is_chunkable_query(
     return ChunkabilityResult(
         mode=ChunkabilityMode.PARALLEL, reason="", bounds=(lo, hi)
     )
+
+
+# =============================================================================
+# SORT VALIDATION
+# =============================================================================
+
+
+def has_natural_sort(sort_spec: Optional[List[Tuple[str, int]]]) -> bool:
+    """
+    Check if sort specification uses $natural (insertion order).
+
+    MongoDB's $natural sort returns documents in the order they were inserted
+    into the collection (or reverse order with -1). This is incompatible with
+    time-based chunking because insertion order is collection-wide and cannot
+    be preserved when splitting queries by time ranges.
+
+    CRITICAL: This validation prevents silent data corruption. If $natural sort
+    is used with chunking, documents would be returned in arbitrary order within
+    each chunk (time-sorted), not in true insertion order.
+
+    Args:
+        sort_spec: Sort specification from cursor.sort(), e.g., [("timestamp", 1)]
+                   or [("$natural", 1)] for insertion order. Can be None or empty.
+
+    Returns:
+        True if $natural sort is detected, False otherwise
+        (including for malformed input)
+
+    Examples:
+        >>> has_natural_sort([("$natural", 1)])
+        True
+
+        >>> has_natural_sort([("$natural", -1)])
+        True
+
+        >>> has_natural_sort([("timestamp", 1)])
+        False
+
+        >>> has_natural_sort([("timestamp", 1), ("_id", 1)])
+        False
+
+        >>> has_natural_sort(None)
+        False
+
+        >>> has_natural_sort([])  # Empty list
+        False
+    """
+    # DEFENSE: Handle None or empty sort_spec
+    if not sort_spec:
+        return False
+
+    # DEFENSE: Validate sort_spec structure before iteration
+    # Protects against malformed input that could cause exceptions
+    if not isinstance(sort_spec, list):
+        return False
+
+    # Check each sort field for $natural
+    # Using try-except for robustness in case of unexpected tuple structure
+    for item in sort_spec:
+        try:
+            # Expected format: (field_name, direction)
+            if isinstance(item, (tuple, list)) and len(item) >= 2:
+                field, _ = item[0], item[1]
+                if field == "$natural":
+                    return True
+        except (TypeError, ValueError, IndexError):
+            # Malformed item - skip it gracefully rather than crashing
+            continue
+
+    return False
