@@ -787,16 +787,14 @@ def or_depth(obj: Any, depth: int = 0) -> int:
 
 
 def split_global_and(
-    query: dict[str, Any],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    query: Dict[str, Any],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
     """
     Split query into global AND conditions and $or branches.
 
     Used by brackets.py for bracket extraction.
     Note: is_chunkable_query() uses normalize_query() for validation.
 
-    IMPORTANT: This function expects a normalized query (no nested $and).
-    Use normalize_query() first if query structure is unknown.
     Used by bracket extraction to create parallel work units.
 
     Args:
@@ -831,7 +829,7 @@ def split_global_and(
         if not isinstance(or_list, list):
             return {}, []
 
-        global_and: dict[str, Any] = {}
+        global_and: Dict[str, Any] = {}
         if "$and" in q and isinstance(q["$and"], list):
             for item in q.pop("$and"):
                 if isinstance(item, dict):
@@ -842,8 +840,8 @@ def split_global_and(
     # Case 2: $or inside $and
     if "$and" in q and isinstance(q["$and"], list):
         and_items = q.pop("$and")
-        found_or: list[dict[str, Any]] = []
-        global_and: dict[str, Any] = {}
+        found_or: List[Dict[str, Any]] = []
+        global_and: Dict[str, Any] = {}
 
         for item in and_items:
             if not isinstance(item, dict):
@@ -889,52 +887,9 @@ def normalize_datetime(dt: Any) -> datetime | None:
     return None
 
 
-def extract_time_bounds(
-    query_dict: dict[str, Any], time_field: str
-) -> tuple[datetime | None, datetime | None]:
-    """
-    Extract time range [lo, hi) from query.
-
-    Used by brackets.py for bracket time range extraction.
-    Note: is_chunkable_query() uses extract_time_bounds_recursive() for validation.
-
-    Handles:
-        - $gte/$gt as lower bound
-        - $lt/$lte as upper bound ($lte converted to $lt by adding 1 microsecond)
-
-    Args:
-        query_dict: Query fragment containing time field
-        time_field: Name of time field
-
-    Returns:
-        Tuple of (lower_bound, upper_bound), each is datetime or None
-
-    Examples:
-        >>> extract_time_bounds(
-        ...     {"timestamp": {"$gte": datetime(2024, 1, 1),
-        ...     "$lt": datetime(2024, 2, 1)}},
-        ...     "timestamp"
-        ... )
-        (datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 2, 1, tzinfo=UTC))
-
-    Current implementation: $lte: t  $lt: t + 1 microsecond
-    Pros: Clean internal model (half-open intervals [lo, hi))
-    Cons: Tiny semantic change at microsecond precision
-    Impact: Minimal - most MongoDB timestamps are millisecond precision anyway
-    """
-    lo, hi = None, None
-    tf = query_dict.get(time_field)
-
-    if isinstance(tf, dict):
-        lo = normalize_datetime(tf.get("$gte") or tf.get("$gt"))
-        if "$lt" in tf:
-            hi = normalize_datetime(tf["$lt"])
-        elif "$lte" in tf:
-            hi_temp = normalize_datetime(tf["$lte"])
-            if hi_temp:
-                hi = hi_temp + timedelta(microseconds=1)
-
-    return lo, hi
+# =============================================================================
+# QUERY NORMALIZATION AND TIME BOUNDS EXTRACTION
+# =============================================================================
 
 
 def normalize_query(query: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, bool]]:
@@ -1054,7 +1009,7 @@ def extract_time_bounds_recursive(
     def extract_from_time_field(value: Any) -> Tuple[Optional[Tuple], bool]:
         """Extract bounds from time field value."""
         if context == "NEGATED":
-            # Time field in negated context  can't use
+            # Time field in negated context -> can't use
             return None, True
 
         if not isinstance(value, dict):
@@ -1216,7 +1171,7 @@ def extract_time_bounds_recursive(
     all_bounds = []
     has_time_ref = False
 
-    for key, value in query.items():
+    for _, value in query.items():
         if isinstance(value, dict):
             bounds, has_ref = extract_time_bounds_recursive(value, time_field, context)
             if has_ref:
@@ -1328,128 +1283,225 @@ def check_negation_safety(query: Dict[str, Any], time_field: str) -> Tuple[bool,
 
 
 def is_chunkable_query(
-    query: Dict[str, Any], time_field: str
-) -> Tuple[bool, str, Tuple[Optional[datetime], Optional[datetime]]]:
+    query: Dict[str, Any],
+    time_field: str,
+    sort_spec: Optional[List[Tuple[str, int]]] = None,
+) -> ChunkabilityResult:
     """
-    Determine if query can be chunked for parallel execution.
+    Determine execution mode for query (PARALLEL/SINGLE/REJECT).
 
-    A query is chunkable if:
-        1. Contains no forbidden operators (geospatial, text, $expr, etc.)
-        2. Conditional operators used safely ($or depth <=1, no $not on time field)
-        3. Has extractable time bounds (both lower and upper)
-        4. No negations on time field ($nor/$not/$ne/$nin)
+    This is the MAIN DECISION POINT for query execution strategy. Every query
+    must pass through this function before execution to ensure correctness.
+
+    Analyzes query to determine if it can be safely parallelized (PARALLEL mode),
+    requires single-worker execution (SINGLE mode), or would produce incorrect
+    results (REJECT mode).
 
     Args:
-        query: MongoDB find() filter
-        time_field: Name of time field for chunking
+        query: MongoDB find() filter dict
+        time_field: Name of time field for chunking (e.g., "timestamp", "timestamp")
+        sort_spec: Optional sort specification from cursor.sort() for
+        $natural detection.
+        Format: [("field", 1)] for ascending, [("field", -1)] for descending
 
     Returns:
-        Tuple of (is_chunkable, reason_if_not, (lo, hi))
+        ChunkabilityResult (NamedTuple) with:
+            - mode: ChunkabilityMode enum (PARALLEL/SINGLE/REJECT)
+            - reason: str explaining the decision (empty for PARALLEL)
+            - bounds: Tuple[Optional[datetime], Optional[datetime]]
+            time range extracted
+
+        Can be unpacked as tuple (NamedTuple feature):
+            mode, reason, bounds = result
+
+    Execution Modes:
+        PARALLEL: Safe for parallel time-chunked execution
+        SINGLE: Valid query requiring single-worker fallback
+        REJECT: Query would produce incorrect results
 
     Examples:
-        # Simple query - chunkable
-        >>> is_chunkable_query({
+        # PARALLEL mode - standard query
+        >>> result = is_chunkable_query({
         ...     "account_id": ObjectId("..."),
-        ...     "device_id": {"$in": [ObjectId("..."), ...]},
         ...     "timestamp": {"$gte": t1, "$lt": t2}
         ... }, "timestamp")
-        (True, '', (t1, t2))
+        >>> result.mode == ChunkabilityMode.PARALLEL
+        True
 
-        # $or query - chunkable
-        >>> is_chunkable_query({
+        # SINGLE mode - $natural sort
+        >>> result = is_chunkable_query({
+        ...     "timestamp": {"$gte": t1, "$lt": t2}
+        ... }, "timestamp", sort_spec=[("$natural", 1)])
+        >>> result.mode == ChunkabilityMode.SINGLE
+        True
+
+        # SINGLE mode - unbounded $or
+        >>> result = is_chunkable_query({
         ...     "$or": [
         ...         {"sensor": "A", "timestamp": {"$gte": t1, "$lt": t2}},
-        ...         {"sensor": "B", "timestamp": {"$gte": t3, "$lt": t4}}
+        ...         {"sensor": "B"}  # No time constraint
         ...     ]
         ... }, "timestamp")
-        (True, '', (min(t1, t3), max(t2, t4)))
+        >>> result.mode == ChunkabilityMode.SINGLE
+        True
 
-        # Nested $and with $or - NOW chunkable!
-        >>> is_chunkable_query({
-        ...     "$and": [
-        ...         {"account_id": "123"},
-        ...         {"$and": [
-        ...             {"timestamp": {"$gte": t1, "$lt": t2}},
-        ...             {"$or": [{"region": "US"}, {"region": "EU"}]}
-        ...         ]}
-        ...     ]
+        # SINGLE mode - nested $or (complex but executable)
+        >>> result = is_chunkable_query({
+        ...     "$or": [{"$or": [{"a": 1}]}]
         ... }, "timestamp")
-        (True, '', (t1, t2))
+        >>> result.mode == ChunkabilityMode.SINGLE
+        True
 
-        # Multiple $or - NOW chunkable (single bracket, time-chunked)!
-        >>> is_chunkable_query({
-        ...     "$and": [
-        ...         {"$or": [{"region": "US"}, {"region": "EU"}]},
-        ...         {"$or": [{"sensor": "A"}, {"sensor": "B"}]}
-        ...     ],
-        ...     "timestamp": {"$gte": t1, "$lt": t2}
+        # SINGLE mode - operator requiring full dataset
+        >>> result = is_chunkable_query({
+        ...     "$text": {"$search": "test"}
         ... }, "timestamp")
-        (True, '', (t1, t2))
+        >>> result.mode == ChunkabilityMode.SINGLE
+        True
+
+        # REJECT mode - empty $or (invalid syntax)
+        >>> result = is_chunkable_query({
+        ...     "$or": []
+        ... }, "timestamp")
+        >>> result.mode == ChunkabilityMode.REJECT
+        True
     """
-    # Normalize query structure
+    # =========================================================================
+    # VALIDATION PIPELINE: 13 Steps from Most-to-Least Restrictive
+    # =========================================================================
+    # Step 3: Empty $or - REJECT (invalid MongoDB syntax)
+    # Steps 2, 4, 4.5, 5, 6, 11: SINGLE tier (valid but not parallelizable)
+    # Steps 7-9: Time reference checks - SINGLE tier (valid but not parallelizable)
+    # Step 10: Contradictory bounds - REJECT (lo >= hi is impossible)
+    # Step 12: Success - PARALLEL tier (safe for parallel execution)
+    #
+    # Philosophy: Only REJECT for truly invalid queries (empty $or,
+    # contradictory bounds).
+    # Everything else gets SINGLE mode - if MongoDB can execute it,
+    # so can we (single-worker).
+    # conditions (graceful degradation), then approve for PARALLEL (success path).
+    # =========================================================================
+
+    # Step 1: Normalize query structure
     normalized, complexity_flags = normalize_query(query)
 
-    # Validate operators
-    # Check nested $or (reject if depth > 1)
+    # Step 2: Check nested $or (SINGLE tier - complex but executable)
     if complexity_flags["nested_or"]:
-        return False, "nested $or operators (depth > 1) not supported", (None, None)
+        # Extract time bounds for single-worker execution
+        time_bounds, has_time_ref = extract_time_bounds_recursive(
+            normalized, time_field
+        )
+        lo, hi = time_bounds if time_bounds else (None, None)
 
-    # Check for empty $or array (matches no documents)
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE,
+            reason="nested $or operators (depth > 1) require single-worker execution",
+            bounds=(lo, hi),
+        )
+
+    # Step 3: Check for empty $or array (REJECT tier)
     if (
         "$or" in normalized
         and isinstance(normalized.get("$or"), list)
         and len(normalized["$or"]) == 0
     ):
-        return False, "$or with empty array matches no documents", (None, None)
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.REJECT,
+            reason="$or with empty array matches no documents",
+            bounds=(None, None),
+        )
 
-    # Check forbidden operators
+    # Step 4: Check operators requiring full dataset (SINGLE tier)
     has_forbidden, op = has_forbidden_ops(normalized)
     if has_forbidden:
-        return False, f"contains forbidden operator: {op}", (None, None)
+        # Extract time bounds for single-worker execution
+        time_bounds, has_time_ref = extract_time_bounds_recursive(
+            normalized, time_field
+        )
+        lo, hi = time_bounds if time_bounds else (None, None)
 
-    # Check conditional operators
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE,
+            reason=f"operator '{op}' requires full dataset (single-worker execution)",
+            bounds=(lo, hi),
+        )
+
+    # Step 4.5: Check for unknown operators (SINGLE tier - experimental)
+    has_unknown, op = has_unknown_operators(normalized)
+    if has_unknown:
+        # Extract time bounds for single-worker execution
+        time_bounds, has_time_ref = extract_time_bounds_recursive(
+            normalized, time_field
+        )
+        lo, hi = time_bounds if time_bounds else (None, None)
+
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE,
+            reason=f"unknown operator '{op}' (experimental single-worker execution)",
+            bounds=(lo, hi),
+        )
+
+    # Step 5: Check conditional operators (SINGLE tier)
     result = check_conditional_operators(normalized, time_field)
     if not result:
-        return False, result.reason, (None, None)
+        # Extract time bounds for single-worker execution
+        time_bounds, has_time_ref = extract_time_bounds_recursive(
+            normalized, time_field
+        )
+        lo, hi = time_bounds if time_bounds else (None, None)
 
-    # Extract time bounds
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE, reason=result.reason, bounds=(lo, hi)
+        )
+
+    # Step 6: To Be implemented - Check for $natural sort (SINGLE tier)
+    # Step 7: Extract time bounds
     time_bounds, has_time_ref = extract_time_bounds_recursive(normalized, time_field)
 
+    # Step 8: Check time field reference (SINGLE tier - no time bounds)
     if not has_time_ref:
-        return False, "no time field reference found", (None, None)
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE,
+            reason="no time field reference found",
+            bounds=(None, None),
+        )
 
+    # Step 9: Check time bounds validity (SINGLE tier - unbounded/partial)
     if time_bounds is None:
-        # More specific error messages based on the query structure
+        # More specific error messages based on query structure
         if "$or" in normalized:
-            # Check if $or has unbounded/partial branches
-            reason = (
-                "$or query has unbounded or partial time constraints "
-                "in one or more branches"
-            )
+            reason = "$or query has unbounded or partial time constraints in one \
+            or more branches"
         elif "$ne" in str(normalized) or "$nin" in str(normalized):
             reason = "query contains negation operators ($ne/$nin) on time field"
         elif "$in" in str(normalized) and "[]" in str(normalized):
             reason = "query contains empty $in array on time field"
         else:
             reason = "no complete time range (invalid or contradictory bounds)"
-        return False, reason, (None, None)
+
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE, reason=reason, bounds=(None, None)
+        )
 
     lo, hi = time_bounds
 
-    # Validate bounds are sensible
+    # Step 10: Validate bounds are sensible (REJECT tier - contradictory)
     if lo >= hi:
-        return (
-            False,
-            (
-                "invalid time range: lower bound >= upper bound "
-                "(contradictory constraints)"
-            ),
-            (None, None),
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.REJECT,
+            reason="invalid time range: lower bound >= upper bound \
+                (contradictory constraints)",
+            bounds=(None, None),
         )
 
-    # Check negation safety
+    # Step 11: Check negation safety (SINGLE tier - works but not parallelizable)
     is_safe, reason = check_negation_safety(normalized, time_field)
     if not is_safe:
-        return False, reason, (None, None)
+        return ChunkabilityResult(
+            mode=ChunkabilityMode.SINGLE, reason=reason, bounds=(lo, hi)
+        )
 
-    return True, "", (lo, hi)
+    # Step 12: All checks passed - PARALLEL mode
+    return ChunkabilityResult(
+        mode=ChunkabilityMode.PARALLEL, reason="", bounds=(lo, hi)
+    )
