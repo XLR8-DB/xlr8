@@ -988,7 +988,7 @@ def normalize_query(query: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, bo
 
 def extract_time_bounds_recursive(
     query: Dict[str, Any], time_field: str, context: str = "POSITIVE"
-) -> Tuple[Optional[Tuple[datetime, datetime]], bool]:
+) -> Tuple[Optional[Tuple[datetime, datetime, bool, bool]], bool]:
     """
     Recursively extract time bounds from query tree.
 
@@ -1001,7 +1001,11 @@ def extract_time_bounds_recursive(
 
     Returns:
         Tuple of (time_bounds, has_time_ref)
-        - time_bounds: (lo, hi) or None
+        - time_bounds: (lo, hi, hi_inclusive, lo_inclusive) or None
+            - lo: Lower bound datetime
+            - hi: Upper bound datetime  
+            - hi_inclusive: True if original query used $lte, False if $lt
+            - lo_inclusive: True if original query used $gte, False if $gt
         - has_time_ref: True if query references time field anywhere
     """
 
@@ -1014,36 +1018,53 @@ def extract_time_bounds_recursive(
         if not isinstance(value, dict):
             # Direct equality: {"timestamp": t1}
             dt = normalize_datetime(value)
-            return ((dt, dt), True) if dt else (None, True)
+            # Equality is inclusive on both sides
+            return ((dt, dt, True, True), True) if dt else (None, True)
 
-        lo, hi = None, None
+        lo, hi, hi_inclusive, lo_inclusive = None, None, False, True
 
         for op, operand in value.items():
             if op == "$gte":
                 new_lo = normalize_datetime(operand)
                 # Take most restrictive lower bound
                 if new_lo:
-                    lo = max(lo, new_lo) if lo is not None else new_lo
+                    if lo is None or new_lo > lo:
+                        lo = new_lo
+                        lo_inclusive = True
+                    elif new_lo == lo:
+                        lo_inclusive = True  # Keep inclusive if same value
             elif op == "$gt":
                 dt = normalize_datetime(operand)
                 if dt:
-                    new_lo = dt + timedelta(microseconds=1)
-                    # Take most restrictive lower bound
-                    lo = max(lo, new_lo) if lo is not None else new_lo
+                    # $gt is exclusive - track the actual value, not adjusted
+                    if lo is None or dt > lo:
+                        lo = dt
+                        lo_inclusive = False
+                    elif dt == lo:
+                        lo_inclusive = False  # $gt is more restrictive than $gte at same value
             elif op == "$lt":
                 new_hi = normalize_datetime(operand)
                 # Take most restrictive upper bound
                 if new_hi:
-                    hi = min(hi, new_hi) if hi is not None else new_hi
+                    if hi is None or new_hi < hi:
+                        hi = new_hi
+                        hi_inclusive = False
+                    elif new_hi == hi:
+                        hi_inclusive = False  # $lt is more restrictive
             elif op == "$lte":
                 dt = normalize_datetime(operand)
                 if dt:
-                    new_hi = dt + timedelta(microseconds=1)
-                    # Take most restrictive upper bound
-                    hi = min(hi, new_hi) if hi is not None else new_hi
+                    # $lte is inclusive - track the actual value
+                    if hi is None or dt < hi:
+                        hi = dt
+                        hi_inclusive = True
+                    elif dt == hi:
+                        hi_inclusive = True  # Keep inclusive if same value
             elif op == "$eq":
                 dt = normalize_datetime(operand)
                 lo = hi = dt
+                hi_inclusive = True  # Equality is inclusive
+                lo_inclusive = True  # Equality is inclusive
             elif op == "$in":
                 # Take envelope
                 if isinstance(operand, list):
@@ -1055,28 +1076,52 @@ def extract_time_bounds_recursive(
                     if dates:
                         lo = min(dates)
                         hi = max(dates)
+                        lo_inclusive = True  # $in with dates is inclusive
+                        hi_inclusive = True  # $in with dates is inclusive
             elif op in {"$ne", "$nin", "$not"}:
                 # Negation on time field
                 return None, True
 
         if lo is not None and hi is not None:
             # Validate bounds are sensible
-            if lo >= hi:
+            if lo > hi or (lo == hi and not (hi_inclusive and lo_inclusive)):
                 # Contradictory bounds (e.g., $gte: 2024-02-01, $lt: 2024-01-01)
                 return None, True
-            return (lo, hi), True
+            return (lo, hi, hi_inclusive, lo_inclusive), True
 
         return None, True
 
     def intersect_bounds(b1: Tuple, b2: Tuple) -> Optional[Tuple]:
-        """Intersect two bounds."""
-        lo = max(b1[0], b2[0])
-        hi = min(b1[1], b2[1])
+        """Intersect two bounds, taking most restrictive operators."""
+        lo1, hi1, hi_inc1, lo_inc1 = b1
+        lo2, hi2, hi_inc2, lo_inc2 = b2
+        
+        # Take max lower bound
+        if lo1 > lo2:
+            lo = lo1
+            lo_inclusive = lo_inc1
+        elif lo2 > lo1:
+            lo = lo2
+            lo_inclusive = lo_inc2
+        else:  # lo1 == lo2
+            lo = lo1
+            lo_inclusive = lo_inc1 and lo_inc2  # Both must be inclusive
+        
+        # Take min upper bound  
+        if hi1 < hi2:
+            hi = hi1
+            hi_inclusive = hi_inc1
+        elif hi2 < hi1:
+            hi = hi2
+            hi_inclusive = hi_inc2
+        else:  # hi1 == hi2
+            hi = hi1
+            hi_inclusive = hi_inc1 and hi_inc2  # Both must be inclusive
 
-        if lo >= hi:
+        if lo > hi or (lo == hi and not (hi_inclusive and lo_inclusive)):
             return None  # Empty intersection
 
-        return (lo, hi)
+        return (lo, hi, hi_inclusive, lo_inclusive)
 
     # Check if this is time field directly
     if time_field in query:
@@ -1145,10 +1190,17 @@ def extract_time_bounds_recursive(
             return None, has_time_ref
 
         # All branches have full bounds - safe to take union (envelope)
-        lo = min(b[0] for b in all_bounds)
-        hi = max(b[1] for b in all_bounds)
+        # For union: take min lo, max hi
+        # For inclusivity: preserve inclusive if ANY branch uses it at the boundary
+        min_lo = min(b[0] for b in all_bounds)
+        max_hi = max(b[1] for b in all_bounds)
+        
+        # hi_inclusive is True if ANY branch with max_hi uses $lte
+        hi_inclusive = any(b[2] for b in all_bounds if b[1] == max_hi)
+        # lo_inclusive is True if ANY branch with min_lo uses $gte
+        lo_inclusive = any(b[3] for b in all_bounds if b[0] == min_lo)
 
-        return (lo, hi), has_time_ref
+        return (min_lo, max_hi, hi_inclusive, lo_inclusive), has_time_ref
 
     # Handle $nor (negates context)
     if "$nor" in query:
@@ -1390,7 +1442,7 @@ def is_chunkable_query(
         time_bounds, has_time_ref = extract_time_bounds_recursive(
             normalized, time_field
         )
-        lo, hi = time_bounds if time_bounds else (None, None)
+        lo, hi, hi_inclusive, lo_inclusive = time_bounds if time_bounds else (None, None, False, True)
 
         return ChunkabilityResult(
             mode=ChunkabilityMode.SINGLE,
@@ -1417,7 +1469,7 @@ def is_chunkable_query(
         time_bounds, has_time_ref = extract_time_bounds_recursive(
             normalized, time_field
         )
-        lo, hi = time_bounds if time_bounds else (None, None)
+        lo, hi, hi_inclusive, lo_inclusive = time_bounds if time_bounds else (None, None, False, True)
 
         return ChunkabilityResult(
             mode=ChunkabilityMode.SINGLE,
@@ -1432,7 +1484,7 @@ def is_chunkable_query(
         time_bounds, has_time_ref = extract_time_bounds_recursive(
             normalized, time_field
         )
-        lo, hi = time_bounds if time_bounds else (None, None)
+        lo, hi, hi_inclusive, lo_inclusive = time_bounds if time_bounds else (None, None, False, True)
 
         return ChunkabilityResult(
             mode=ChunkabilityMode.SINGLE,
@@ -1447,7 +1499,7 @@ def is_chunkable_query(
         time_bounds, has_time_ref = extract_time_bounds_recursive(
             normalized, time_field
         )
-        lo, hi = time_bounds if time_bounds else (None, None)
+        lo, hi, hi_inclusive, lo_inclusive = time_bounds if time_bounds else (None, None, False, True)
 
         return ChunkabilityResult(
             mode=ChunkabilityMode.SINGLE, reason=result.reason, bounds=(lo, hi)
@@ -1459,7 +1511,7 @@ def is_chunkable_query(
         time_bounds, has_time_ref = extract_time_bounds_recursive(
             normalized, time_field
         )
-        lo, hi = time_bounds if time_bounds else (None, None)
+        lo, hi, hi_inclusive, lo_inclusive = time_bounds if time_bounds else (None, None, False, True)
 
         return ChunkabilityResult(
             mode=ChunkabilityMode.SINGLE,
@@ -1494,10 +1546,10 @@ def is_chunkable_query(
             mode=ChunkabilityMode.SINGLE, reason=reason, bounds=(None, None)
         )
 
-    lo, hi = time_bounds
+    lo, hi, hi_inclusive, lo_inclusive = time_bounds
 
     # Step 10: Validate bounds are sensible (REJECT tier - contradictory)
-    if lo >= hi:
+    if lo > hi or (lo == hi and not (hi_inclusive and lo_inclusive)):
         return ChunkabilityResult(
             mode=ChunkabilityMode.REJECT,
             reason="invalid time range: lower bound >= upper bound \

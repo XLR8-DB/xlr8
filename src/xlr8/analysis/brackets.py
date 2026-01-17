@@ -146,17 +146,28 @@ class TimeRange:
     """
     Time range for a bracket.
 
+    Attributes:
+        lo: Lower bound datetime
+        hi: Upper bound datetime
+        is_full: Whether both lo and hi are specified
+        hi_inclusive: If True, use $lte; if False, use $lt (default: False for $lt)
+        lo_inclusive: If True, use $gte; if False, use $gt (default: True for $gte)
+
     Example:
         TimeRange(
             lo=datetime(2024, 1, 1, tzinfo=UTC),
             hi=datetime(2024, 7, 1, tzinfo=UTC),
-            is_full=True  # Both lo and hi are specified
+            is_full=True,
+            hi_inclusive=False,  # Use $lt
+            lo_inclusive=True    # Use $gte
         )
     """
 
     lo: Optional[datetime]
     hi: Optional[datetime]
     is_full: bool
+    hi_inclusive: bool = False  # Default to $lt for backward compatibility
+    lo_inclusive: bool = True   # Default to $gte for backward compatibility
 
 
 @dataclass
@@ -613,6 +624,7 @@ def _merge_full_ranges(ranges: List[TimeRange]) -> List[TimeRange]:
 
     Sorts ranges by start time, then iterates through merging any
     that overlap or touch (end of one equals start of next).
+    Preserves hi_inclusive and lo_inclusive flags.
     """
 
     rs = [r for r in ranges if r.is_full and r.lo and r.hi]
@@ -620,7 +632,7 @@ def _merge_full_ranges(ranges: List[TimeRange]) -> List[TimeRange]:
         return []
 
     rs.sort(key=lambda r: r.lo)  # type: ignore[arg-type]
-    out: List[TimeRange] = [TimeRange(rs[0].lo, rs[0].hi, True)]
+    out: List[TimeRange] = [TimeRange(rs[0].lo, rs[0].hi, True, rs[0].hi_inclusive, rs[0].lo_inclusive)]
     for r in rs[1:]:
         last = out[-1]
         # Type assertions: we filtered for r.lo and r.hi being not None above
@@ -629,8 +641,11 @@ def _merge_full_ranges(ranges: List[TimeRange]) -> List[TimeRange]:
         if r.lo <= last.hi:  # overlap or touch
             if r.hi > last.hi:
                 last.hi = r.hi
+                last.hi_inclusive = r.hi_inclusive
+            elif r.hi == last.hi:
+                last.hi_inclusive = last.hi_inclusive or r.hi_inclusive
         else:
-            out.append(TimeRange(r.lo, r.hi, True))
+            out.append(TimeRange(r.lo, r.hi, True, r.hi_inclusive, r.lo_inclusive))
     return out
 
 
@@ -669,6 +684,7 @@ def _merge_partial_ranges(partials: List[TimeRange]) -> List[TimeRange]:
     - If ANY range is completely unbounded (no lo, no hi), it covers everything
     - Two $gte-only: keep the one with smallest lo (covers most)
     - Two $lt-only: keep the one with largest hi (covers most)
+    Preserves lo_inclusive and hi_inclusive flags.
     """
     if not partials:
         return []
@@ -677,7 +693,7 @@ def _merge_partial_ranges(partials: List[TimeRange]) -> List[TimeRange]:
     unbounded = [r for r in partials if r.lo is None and r.hi is None]
     if unbounded:
         # One unbounded range covers all other partials
-        return [TimeRange(None, None, False)]
+        return [TimeRange(None, None, False, False, True)]
 
     gte_only = [r for r in partials if r.lo is not None and r.hi is None]
     lt_only = [r for r in partials if r.lo is None and r.hi is not None]
@@ -690,12 +706,16 @@ def _merge_partial_ranges(partials: List[TimeRange]) -> List[TimeRange]:
     if gte_only:
         # Filter out None values for type safety
         min_lo = min(r.lo for r in gte_only if r.lo is not None)
-        merged.append(TimeRange(min_lo, None, False))
+        # Find the lo_inclusive from the range with min_lo
+        lo_inclusive = next(r.lo_inclusive for r in gte_only if r.lo == min_lo)
+        merged.append(TimeRange(min_lo, None, False, False, lo_inclusive))
 
     # For $lt-only, keep the largest hi (covers most data)
     if lt_only:
         max_hi = max(r.hi for r in lt_only if r.hi is not None)
-        merged.append(TimeRange(None, max_hi, False))
+        # Find the hi_inclusive from the range with max_hi
+        hi_inclusive = next(r.hi_inclusive for r in lt_only if r.hi == max_hi)
+        merged.append(TimeRange(None, max_hi, False, hi_inclusive, True))
 
     return merged
 
@@ -938,9 +958,9 @@ def build_brackets_for_find(
                 combined = {**global_and, **branch}
                 bounds, _ = extract_time_bounds_recursive(combined, time_field)
                 if bounds is None:
-                    branch_lo, branch_hi = None, None
+                    branch_lo, branch_hi, branch_hi_inc, branch_lo_inc = None, None, False, True
                 else:
-                    branch_lo, branch_hi = bounds
+                    branch_lo, branch_hi, branch_hi_inc, branch_lo_inc = bounds
 
                 # Check if this branch has NO time constraint at all
                 if branch_lo is None and branch_hi is None:
@@ -949,7 +969,7 @@ def build_brackets_for_find(
                 elif branch_lo is None or branch_hi is None:
                     has_partial_branch = True
 
-                time_bounds_list.append((branch_lo, branch_hi))
+                time_bounds_list.append((branch_lo, branch_hi, branch_hi_inc, branch_lo_inc))
 
                 # Extract static filter (without time)
                 static_wo_time = dict(combined)
@@ -969,6 +989,7 @@ def build_brackets_for_find(
             # 3. Time ranges are contiguous (no gaps)
             can_merge = False
             merged_lo, merged_hi = None, None
+            merged_hi_inclusive, merged_lo_inclusive = False, True
 
             if (
                 all_static_identical
@@ -980,26 +1001,34 @@ def build_brackets_for_find(
                 #
                 # Algorithm: Sort by start time, then verify each range starts
                 # at or before the previous range's end (overlap or adjacent)
-                full_ranges = [(lo, hi) for lo, hi in time_bounds_list]
+                full_ranges = [(lo, hi, hi_inc, lo_inc) for lo, hi, hi_inc, lo_inc in time_bounds_list]
                 sorted_ranges = sorted(full_ranges, key=lambda r: r[0])
 
                 # Start with first range
                 running_lo = sorted_ranges[0][0]
                 running_hi = sorted_ranges[0][1]
+                running_lo_inclusive = sorted_ranges[0][3]
+                running_hi_inclusive = sorted_ranges[0][2]
                 has_gap = False
 
-                for lo, hi in sorted_ranges[1:]:
+                for lo, hi, hi_inc, lo_inc in sorted_ranges[1:]:
                     if lo > running_hi:
                         # Gap detected! This range starts after the previous ends
                         has_gap = True
                         break
                     # Extend running_hi if this range extends further
-                    running_hi = max(running_hi, hi)
+                    if hi > running_hi:
+                        running_hi = hi
+                        running_hi_inclusive = hi_inc
+                    elif hi == running_hi:
+                        running_hi_inclusive = running_hi_inclusive or hi_inc
 
                 if not has_gap:
                     # All ranges are contiguous - we can merge!
                     merged_lo = running_lo
                     merged_hi = running_hi
+                    merged_hi_inclusive = running_hi_inclusive
+                    merged_lo_inclusive = running_lo_inclusive
                     can_merge = True
 
             if can_merge:
@@ -1010,7 +1039,7 @@ def build_brackets_for_find(
                     [
                         Bracket(
                             static_filter=static_filters[0],
-                            timerange=TimeRange(merged_lo, merged_hi, True),
+                            timerange=TimeRange(merged_lo, merged_hi, True, merged_hi_inclusive, merged_lo_inclusive),
                         )
                     ],
                     (merged_lo, merged_hi),
@@ -1019,16 +1048,26 @@ def build_brackets_for_find(
             # Cannot merge - fall back to single bracket with full $or
             # This preserves the original $or semantics
             lo, hi = None, None
+            hi_inclusive, lo_inclusive = False, True
 
-            for branch_lo, branch_hi in time_bounds_list:
+            for branch_lo, branch_hi, branch_hi_inc, branch_lo_inc in time_bounds_list:
                 if branch_lo is not None:
-                    lo = branch_lo if lo is None else min(lo, branch_lo)
+                    if lo is None or branch_lo < lo:
+                        lo = branch_lo
+                        lo_inclusive = branch_lo_inc
+                    elif branch_lo == lo:
+                        lo_inclusive = lo_inclusive or branch_lo_inc
                 if branch_hi is not None:
-                    hi = branch_hi if hi is None else max(hi, branch_hi)
+                    if hi is None or branch_hi > hi:
+                        hi = branch_hi
+                        hi_inclusive = branch_hi_inc
+                    elif branch_hi == hi:
+                        hi_inclusive = hi_inclusive or branch_hi_inc
 
             # If any branch is unbounded, the whole query is unbounded
             if has_unbounded_branch:
                 lo, hi = None, None
+                hi_inclusive, lo_inclusive = False, True
 
             # Build the single bracket with original query structure
             single_filter = dict(query)
@@ -1042,7 +1081,7 @@ def build_brackets_for_find(
                 [
                     Bracket(
                         static_filter=single_filter,
-                        timerange=TimeRange(lo, hi, is_full),
+                        timerange=TimeRange(lo, hi, is_full, hi_inclusive, lo_inclusive),
                     )
                 ],
                 (lo, hi),
@@ -1063,9 +1102,9 @@ def build_brackets_for_find(
 
         bounds, _ = extract_time_bounds_recursive(eff, time_field)
         if bounds is None:
-            lo, hi = None, None
+            lo, hi, hi_inclusive, lo_inclusive = None, None, False, True
         else:
-            lo, hi = bounds
+            lo, hi, hi_inclusive, lo_inclusive = bounds
         is_full = lo is not None and hi is not None
 
         # Remove time field from static filter
@@ -1077,7 +1116,7 @@ def build_brackets_for_find(
             return False, "nested-or-in-branch", [], (None, None)
 
         prelim.append(
-            Bracket(static_filter=static_wo_time, timerange=TimeRange(lo, hi, is_full))
+            Bracket(static_filter=static_wo_time, timerange=TimeRange(lo, hi, is_full, hi_inclusive, lo_inclusive))
         )
 
     grouped: Dict[str, Dict[str, Any]] = {}
@@ -1106,7 +1145,7 @@ def build_brackets_for_find(
         if has_unbounded:
             # Unbounded covers everything - just emit the unbounded bracket
             out_brackets.append(
-                Bracket(static_filter=static, timerange=TimeRange(None, None, False))
+                Bracket(static_filter=static, timerange=TimeRange(None, None, False, False, True))
             )
             continue  # Skip all full and other partial for this static_filter
 

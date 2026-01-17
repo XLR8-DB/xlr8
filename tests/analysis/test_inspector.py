@@ -1166,7 +1166,12 @@ class TestEdgeCasesDataLossPrevention:
     # -------------------------------------------------------------------------
 
     def test_multiple_lower_bound_operators(self):
-        """Multiple lower bound operators ($gte + $gt) should take most restrictive."""
+        """Multiple lower bound operators ($gte + $gt) should take most restrictive.
+
+        Note: With proper lo_inclusive tracking, we no longer add microseconds
+        to simulate $gt. Instead, the actual value is returned and lo_inclusive
+        is set to False when $gt is the effective operator.
+        """
         time_field = "timestamp"
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 1, 5, tzinfo=timezone.utc)
@@ -1175,7 +1180,7 @@ class TestEdgeCasesDataLossPrevention:
         query = {
             time_field: {
                 "$gte": t1,  # Less restrictive
-                "$gt": t2,  # More restrictive (adds microsecond)
+                "$gt": t2,  # More restrictive (exclusive)
                 "$lt": t3,
             }
         }
@@ -1185,11 +1190,11 @@ class TestEdgeCasesDataLossPrevention:
             is_chunkable
         ), f"Query with multiple lower bounds should be allowed: {reason}"
         assert bounds is not None
-        # Should take t2 + 1 microsecond as lower bound (more restrictive $gt)
-        expected_lower = t2 + timedelta(microseconds=1)
+        # Should take t2 as lower bound (the actual value from more restrictive $gt)
+        # The lo_inclusive flag handles the exclusivity, not microsecond adjustment
         assert (
-            bounds[0] == expected_lower
-        ), f"Expected lower bound {expected_lower}, got {bounds[0]}"
+            bounds[0] == t2
+        ), f"Expected lower bound {t2}, got {bounds[0]}"
 
     def test_multiple_upper_bound_operators(self):
         """Multiple upper bound operators ($lt + $lte) should take most restrictive."""
