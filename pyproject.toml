@@ -13,6 +13,7 @@ dependencies = [
     "pymongo==3.12.0", #TODO: change this to >= when ready to publish
     "pandas==1.5.0", #TODO: change this to >= when ready to publish
     "polars==0.15.1", #TODO: change this to >= when ready to publish
+    "duckdb==0.6.0", #TODO: change this to >= when ready to publish
 ]
 
 [tool.hatch.build.targets.wheel]
