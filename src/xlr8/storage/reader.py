@@ -91,7 +91,11 @@ OUTPUT: DataFrame ( or Polars to stream pyarrow.Table )
 
 import logging
 from pathlib import Path
-from typing import Union
+from typing import Any, Dict, Iterator, Union
+
+import pyarrow.parquet as pq
+
+from xlr8.constants import DEFAULT_BATCH_SIZE
 
 logger = logging.getLogger(__name__)
 
@@ -128,3 +132,33 @@ class ParquetReader:
 
         # Find all parquet files (may be empty if query returned no results)
         self.parquet_files = sorted(self.cache_dir.glob("*.parquet"))
+
+    def iter_documents(
+        self,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ) -> Iterator[Dict[str, Any]]:
+        """
+        Stream documents from all parquet files.
+
+        Reads in batches to avoid loading entire dataset into memory.
+
+        Args:
+            batch_size: Number of rows to read per batch
+
+        Yields:
+            Document dictionaries
+
+        Example:
+            >>> for doc in reader.iter_documents(batch_size=5000):
+            ...     process(doc)
+        """
+        for parquet_file in self.parquet_files:
+            # Read in batches
+            parquet_file_obj = pq.ParquetFile(parquet_file)
+
+            for batch in parquet_file_obj.iter_batches(batch_size=batch_size):
+                # Convert Arrow batch to pandas then to dicts
+                df_batch = batch.to_pandas()
+
+                for _, row in df_batch.iterrows():
+                    yield row.to_dict()
