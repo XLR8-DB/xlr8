@@ -90,6 +90,7 @@ OUTPUT: DataFrame ( or Polars to stream pyarrow.Table )
 """
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterator, Literal, Optional, Union
 
@@ -522,3 +523,141 @@ class ParquetReader:
                     else:
                         raise
             return df
+
+    def to_dataframe(
+        self,
+        engine: str = "pandas",
+        schema: Optional[Any] = None,
+        time_field: Optional[str] = None,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        coerce: Literal["raise", "error"] = "raise",
+        any_type_strategy: Literal["float", "string", "keep_struct"] = "float",
+    ) -> Union[pd.DataFrame, "pl.DataFrame"]:
+        """
+        Load all parquet files into a DataFrame.
+
+        Args:
+            engine: "pandas" or "polars"
+            schema: Schema for ObjectId reconstruction and struct flattening (required)
+            time_field: Name of time field for date filtering (from schema.time_field)
+            start_date: Filter data from this date (inclusive, tz-aware datetime)
+            end_date: Filter data until this date (exclusive, tz-aware datetime)
+            coerce: Error handling mode:
+                    - "raise": Raise exceptions on schema validation errors (default)
+                    - "error": Log errors and store None for invalid values
+            any_type_strategy: How to decode Types.Any() struct columns in Polars:
+                    - "float": Coalesce to Float64, prioritize numeric (default)
+                    - "string": Convert everything to string (lossless)
+                    - "keep_struct": Keep raw struct, don't decode
+
+        Returns:
+            DataFrame with all documents (structs flattened, ObjectIds reconstructed)
+
+        Example:
+            >>> df = reader.to_dataframe(
+            ...     schema=schema,
+            ...     time_field="timestamp",
+            ...     start_date=datetime(2024, 6, 1, tzinfo=timezone.utc),
+            ...     end_date=datetime(2024, 6, 15, tzinfo=timezone.utc),
+            ... )
+        """
+        # Build PyArrow filter for date range (predicate pushdown)
+        filters = None
+        if time_field and (start_date or end_date):
+            filter_conditions = []
+            if start_date:
+                filter_conditions.append((time_field, ">=", start_date))
+            if end_date:
+                filter_conditions.append((time_field, "<", end_date))
+            if filter_conditions:
+                filters = filter_conditions
+
+        if engine == "polars":
+            # Return empty DataFrame if no parquet files (query returned no results)
+            if not self.parquet_files:
+                return pl.DataFrame()
+
+            # Polars can read multiple parquet files efficiently
+            # Note: Polars handles filters differently, apply post-read
+            df = pl.read_parquet(self.parquet_files)
+
+            # Apply date filter post-read for Polars
+            if time_field and (start_date or end_date):
+                if start_date:
+                    df = df.filter(pl.col(time_field) >= start_date)
+                if end_date:
+                    df = df.filter(pl.col(time_field) < end_date)
+
+            return self._process_dataframe(
+                df, engine, schema, coerce, any_type_strategy
+            )
+
+        elif engine == "pandas":
+            # Return empty DataFrame if no parquet files (query returned no results)
+            if not self.parquet_files:
+                return pd.DataFrame()
+
+            # Read all files with optional filter (predicate pushdown)
+            # Use PyArrow to read, then convert to pandas - this allows
+            # struct columns to stay in Arrow format for fast Rust decoding
+            tables = []
+            for parquet_file in self.parquet_files:
+                try:
+                    # Use PyArrow filters for efficient predicate pushdown
+                    table = pq.read_table(parquet_file, filters=filters)
+                    tables.append(table)
+                except Exception as e:
+                    if coerce == "error":
+                        logger.error(f"Error reading {parquet_file}: {e}")
+                        continue
+                    raise
+
+            if not tables:
+                return pd.DataFrame()
+
+            # Concatenate Arrow tables
+            import pyarrow as pa
+
+            combined_table = pa.concat_tables(tables)
+
+            # FAST PATH: Decode Any-typed struct columns directly in Arrow
+            # This gives us 44x speedup because Rust reads Arrow memory directly
+            # without Python iteration over dicts
+            any_columns_decoded = {}
+            columns_to_drop = []
+            if schema and hasattr(schema, "fields"):
+                from xlr8.rust_backend import decode_any_struct_arrow
+
+                for field_name, field_type in schema.fields.items():
+                    if (
+                        self._is_any_type(field_type)
+                        and field_name in combined_table.column_names
+                    ):
+                        col = combined_table.column(field_name)
+                        if pa.types.is_struct(col.type):
+                            # Decode in Rust - returns Python list of mixed types
+                            combined = col.combine_chunks()
+                            decoded_values = decode_any_struct_arrow(combined)
+                            any_columns_decoded[field_name] = decoded_values
+                            # Mark for removal to avoid slow dict conversion
+                            # in to_pandas()
+                            columns_to_drop.append(field_name)
+
+            # Drop decoded struct columns before pandas conversion
+            # to avoid dict overhead
+            if columns_to_drop:
+                combined_table = combined_table.drop(columns_to_drop)
+
+            # Convert to pandas (non-Any columns go through normal path)
+            df = combined_table.to_pandas()
+
+            # Add back Any columns with decoded values
+            # (bypassing struct→dict→decode path)
+            for field_name, decoded_values in any_columns_decoded.items():
+                df[field_name] = decoded_values
+
+            return self._process_dataframe(df, engine, schema, coerce)
+
+        else:
+            raise ValueError(f"Unknown engine: {engine}. Use 'pandas' or 'polars'")
