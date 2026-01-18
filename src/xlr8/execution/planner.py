@@ -24,7 +24,7 @@ during parallel MongoDB fetches. Key concepts:
 
    Per-Worker Allocation:
      available_ram = flush_ram_limit_mb - BASELINE_MB
-     cursor_overhead = max_workers × CURSOR_OVERHEAD_MB_PER_WORKER
+    cursor_overhead = max_workers x CURSOR_OVERHEAD_MB_PER_WORKER
      ram_for_data = available_ram - cursor_overhead
      worker_allocation = ram_for_data / max_workers
      flush_trigger_mb = worker_allocation  # Rust handles 15x internally
@@ -90,7 +90,7 @@ RUST_CONFIG = BackendConfig(
     description="Rust async (single process, tokio threads)",
 )
 
-# Python backend: for future multiprocessing implementation
+# Python backend: reserved for future non-Rust implementation
 PYTHON_CONFIG = BackendConfig(
     baseline_mb=120,  # pymongo + pandas + pyarrow imports
     memory_multiplier=3.0,  # Arrow conversion spike
@@ -273,8 +273,12 @@ def build_execution_plan(
 
         if chunking_granularity is not None:
             chunk_size_seconds = int(chunking_granularity.total_seconds())
-            chunks_needed = time_range_seconds + chunk_size_seconds - 1
-            time_chunks = max(1, int(chunks_needed // chunk_size_seconds))
+            time_chunks = max(
+                1,
+                int(
+                    (time_range_seconds + chunk_size_seconds - 1) // chunk_size_seconds
+                ),
+            )
         else:
             # No granularity specified, treat as single chunk
             time_chunks = 1
@@ -285,8 +289,8 @@ def build_execution_plan(
 
     if num_chunks == 0:
         raise ValueError(
-            "No work items found. Either (start_time, end_time) or "
-            "num_unchunked_queries must be provided."
+            "No work items found. Either (start_time, end_time) "
+            "or num_unchunked_queries must be provided to determine work distribution."
         )
     # ==========================================================================
     # DETERMINE WORKER COUNT
@@ -337,7 +341,7 @@ def build_execution_plan(
     # ==========================================================================
     cursor_overhead_total = worker_count * config.cursor_overhead_mb
     # For Rust: memory_multiplier is handled inside buffer, not here
-    # Estimate is: baseline + cursors + (flush_trigger × workers)
+    # Estimate is: baseline + cursors + (flush_trigger x workers)
     data_buffers = worker_count * flush_trigger_mb
 
     allocated = cursor_overhead_total + data_buffers
@@ -345,10 +349,11 @@ def build_execution_plan(
     estimated_ram_mb = min(estimated_ram_mb, peak_ram_limit_mb)
 
     # Store chunk size as timedelta
-    if chunk_size_seconds is not None:
-        chunk_size_td = timedelta(seconds=chunk_size_seconds)
-    else:
-        chunk_size_td = timedelta(days=1)
+    chunk_size_td = (
+        timedelta(seconds=chunk_size_seconds)
+        if chunk_size_seconds is not None
+        else timedelta(days=1)
+    )
 
     return ExecutionPlan(
         worker_count=worker_count,
