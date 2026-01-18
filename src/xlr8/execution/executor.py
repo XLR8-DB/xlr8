@@ -18,18 +18,18 @@ execute_parallel_stream_to_cache() is called with:
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 1: BUILD BRACKETS                                                      │
-│ Query --> List[Bracket]                                                     │
+│ Query -> List[Bracket]                                                      │
 │                                                                             │
 │ Example:                                                                    │
 │ {"$or": [...], "timestamp": {...}}                                          │
-│           ↓                                                                 │
+│           v                                                                 │
 │ [Bracket(static={"sensor_id": "64a..."}, time=Jan-Jul),                  │
 │  Bracket(static={"sensor_id": "64b..."}, time=Jan-Jul)]                  │
 └─────────────────────────────────────────────────────────────────────────────┘
-                              ↓
+                              v
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 2: BUILD EXECUTION PLAN                                                │
-│ Time range + RAM budget --> workers, batch_size, chunk_minutes              │
+│ Time range + RAM budget -> workers, batch_size, chunk_minutes               │
 │                                                                             │
 │ Example (6-month range, 2000MB RAM, max 10 workers):                        │
 │ ExecutionPlan(                                                              │
@@ -39,33 +39,33 @@ execute_parallel_stream_to_cache() is called with:
 │     estimated_ram_mb=1800                                                   │
 │ )                                                                           │
 └─────────────────────────────────────────────────────────────────────────────┘
-                              ↓
+                              v
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 3: CHUNK TIME RANGES                                                   │
-│ Each bracket's time range --> multiple chunks                               │
+│ Each bracket's time range -> multiple chunks                                │
 │                                                                             │
 │ Example (Bracket 1 with Jan-Jul range, 14-day chunks):                      │
-│ --> Chunk 1.1: Jan 1-15 with filter {"sensor_id": "64a..."}              │
-│ --> Chunk 1.2: Jan 15-29 with filter {"sensor_id": "64a..."}             │
-│ --> ...                                                                     │
-│ --> Chunk 1.13: Jun 17 - Jul 1                                              │
+│ -> Chunk 1.1: Jan 1-15 with filter {"sensor_id": "64a..."}               │
+│ -> Chunk 1.2: Jan 15-29 with filter {"sensor_id": "64a..."}              │
+│ -> ...                                                                      │
+│ -> Chunk 1.13: Jun 17 - Jul 1                                               │
 │                                                                             │
-│ Total: 13 chunks × 2 brackets = 26 work items                               │
+│ Total: 13 chunks x 2 brackets = 26 work items                               │
 └─────────────────────────────────────────────────────────────────────────────┘
-                              ↓
+                              v
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 4: PARALLEL RUST FETCH (rust_backend.fetch_chunks_bson)                │
 │ Rust backend processes all chunks concurrently in parallel workers          │
 │                                                                             │
-│ Worker 0: Grabs Chunk 1 --> Fetch 45K docs --> Write part_0000.parquet      │
-│ Worker 1: Grabs Chunk 2 --> Fetch 52K docs --> Write part_0001.parquet      │
+│ Worker 0: Grabs Chunk 1 -> Fetch 45K docs -> Write part_0000.parquet        │
+│ Worker 1: Grabs Chunk 2 -> Fetch 52K docs -> Write part_0001.parquet        │
 │ ...                                                                         │
-│ Worker 9: Grabs Chunk 10 --> Fetch 38K docs --> Write part_0009.parquet     │
+│ Worker 9: Grabs Chunk 10 -> Fetch 38K docs -> Write part_0009.parquet       │
 │                                                                             │
 │ All I/O happens in Rust (GIL-free, tokio async MongoDB client)              │
 │ Workers pull more chunks as they finish until queue is empty                │
 └─────────────────────────────────────────────────────────────────────────────┘
-                              ↓
+                              v
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 5: RETURN STATS                                                        │
 │ {                                                                           │
@@ -97,9 +97,6 @@ from xlr8.schema import Schema
 logger = logging.getLogger(__name__)
 
 
-ChunkForRust = Tuple[Dict[str, Any], int, Optional[datetime], Optional[datetime]]
-
-
 def execute_parallel_stream_to_cache(
     pymongo_collection,
     filter_dict: Dict[str, Any],
@@ -114,6 +111,7 @@ def execute_parallel_stream_to_cache(
     chunking_granularity: Optional[timedelta] = None,
     mongo_uri: Union[str, Callable[[], str], None] = None,
     sort_spec: Optional[List[Tuple[str, int]]] = None,
+    row_group_size: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Execute query with streaming to Parquet cache.
 
@@ -130,12 +128,12 @@ def execute_parallel_stream_to_cache(
         available_ram_gb: Override RAM detection
         max_workers: Maximum workers (default: 4)
         peak_ram_limit_mb: RAM budget (default: 512)
-        chunking_granularity: Time granularity for chunking
-            (e.g., timedelta(minutes=10)).
-            If None, uses single-worker mode without chunking.
+        chunking_granularity: Time granularity for chunking (e.g.,
+            `timedelta(minutes=10)`). If None, uses single-worker mode without chunking.
         mongo_uri: MongoDB connection string or callable that returns one.
         sort_spec: Sort specification for pre-sorting during cache write.
-            Format: [(field, direction), ...] where direction is 1 or -1.
+            Format: `[(field, direction), ...]`
+            Where direction is `1` (ASC) or `-1` (DESC).
 
     Returns:
         Dict with total_docs, total_files, duration_s, workers
@@ -161,8 +159,10 @@ def execute_parallel_stream_to_cache(
     )
     if not ok:
         warnings.warn(
-            f"Query not chunkable ({bracket_reason}). "
-            "Falling back to single-worker mode.",
+            (
+                f"Query not chunkable ({bracket_reason}). "
+                "Falling back to single-worker mode."
+            ),
             UserWarning,
             stacklevel=2,
         )
@@ -227,14 +227,13 @@ def execute_parallel_stream_to_cache(
         max_workers=max_workers,
         peak_ram_limit_mb=effective_peak_ram_mb,
         chunking_granularity=chunking_granularity,
-        # Always pass - planner combines with time chunks
+        # Always pass: planner combines with time chunks.
         num_unchunked_queries=unchunked_brackets_count,
     )
 
-    # Build chunks - OPTIMIZATION: group brackets by time range to avoid
-    # duplicate chunks. If multiple $or branches share the same time range,
-    # combine them into one $or query per chunk instead of creating separate
-    # chunks for each branch.
+    # Build chunks (opt): group brackets by time range.
+    # If multiple $or branches share the same time range, combine them into one $or
+    # query per chunk instead of creating separate chunks for each branch.
 
     # Handle non-chunkable queries (empty brackets)
     if not brackets:
@@ -271,8 +270,8 @@ def execute_parallel_stream_to_cache(
             )
 
             for c_start, c_end in br_chunks:
-                # Determine if this is the last chunk
-                # Preserve original end boundary operator
+                # Determine if this is the last chunk - preserve original end boundary
+                # operator.
                 is_last_chunk = c_end == hi
 
                 if len(bracket_group) == 1:
@@ -372,7 +371,7 @@ def execute_parallel_stream_to_cache(
     # happens in Rust with NO Python GIL contention.
     #
     # Python's role: memory planning, chunking, BSON serialization, result reading
-    # Rust's role: MongoDB client, async/parallel fetch, BSON-->Arrow-->Parquet
+    # Rust's role: MongoDB client, async/parallel fetch, BSON->Arrow->Parquet
     # =========================================================================
 
     # Validate mongo_uri is provided
@@ -409,21 +408,25 @@ def execute_parallel_stream_to_cache(
     # Call Rust backend directly!
     from xlr8 import rust_backend
 
-    result = rust_backend.fetch_chunks_bson(
-        mongodb_uri=resolved_uri,
-        db_name=db_name,
-        collection_name=collection_name,
-        chunks_bson=chunks_bson,
-        schema_json=schema_json,
-        cache_dir=str(cache_manager.cache_dir),
-        num_workers=actual_worker_count,
-        batch_size=exec_plan.batch_size_docs,
-        flush_trigger_mb=exec_plan.flush_trigger_mb,
-        avg_doc_size_bytes=schema.avg_doc_size_bytes,
-        sort_spec_json=json.dumps(sort_spec) if sort_spec else "null",
-        time_field=schema.time_field,
-        projection_json=json.dumps(projection) if projection else "null",
-    )
+    rust_kwargs: Dict[str, Any] = {
+        "mongodb_uri": resolved_uri,
+        "db_name": db_name,
+        "collection_name": collection_name,
+        "chunks_bson": chunks_bson,
+        "schema_json": schema_json,
+        "cache_dir": str(cache_manager.cache_dir),
+        "num_workers": actual_worker_count,
+        "batch_size": exec_plan.batch_size_docs,
+        "flush_trigger_mb": exec_plan.flush_trigger_mb,
+        "avg_doc_size_bytes": schema.avg_doc_size_bytes,
+        "sort_spec_json": json.dumps(sort_spec) if sort_spec else "null",
+        "time_field": schema.time_field,
+        "projection_json": json.dumps(projection) if projection else "null",
+    }
+    if row_group_size is not None:
+        rust_kwargs["row_group_size"] = row_group_size
+
+    result = rust_backend.fetch_chunks_bson(**rust_kwargs)
 
     logger.info(
         "Rust execution complete: %d docs, %d files, %.2fs",
@@ -447,7 +450,9 @@ def execute_parallel_stream_to_cache(
 
 
 def serialize_chunks_for_rust(
-    chunks: Sequence[ChunkForRust],
+    chunks: Sequence[
+        Tuple[Dict[str, Any], int, Optional[datetime], Optional[datetime]]
+    ],
 ) -> bytes:
     """
     Serialize chunks to BSON bytes for Rust backend.
