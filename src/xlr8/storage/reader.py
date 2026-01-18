@@ -907,7 +907,7 @@ class ParquetReader:
         Expand parent field sorts to their child fields in schema definition order.
 
         When user sorts by a parent field like "metadata" but the schema has
-        flattened fields like "metadata.vessel_id", expand to all children.
+        flattened fields like "metadata.device_id", expand to all children.
 
         Args:
             sort_spec: Original [(field, direction), ...]

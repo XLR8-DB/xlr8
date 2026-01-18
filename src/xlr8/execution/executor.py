@@ -18,7 +18,7 @@ execute_parallel_stream_to_cache() is called with:
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 1: BUILD BRACKETS                                                      │
-│ Query → List[Bracket]                                                       │
+│ Query --> List[Bracket]                                                     │
 │                                                                             │
 │ Example:                                                                    │
 │ {"$or": [...], "timestamp": {...}}                                          │
@@ -29,7 +29,7 @@ execute_parallel_stream_to_cache() is called with:
                               ↓
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 2: BUILD EXECUTION PLAN                                                │
-│ Time range + RAM budget → workers, batch_size, chunk_minutes             │
+│ Time range + RAM budget --> workers, batch_size, chunk_minutes              │
 │                                                                             │
 │ Example (6-month range, 2000MB RAM, max 10 workers):                        │
 │ ExecutionPlan(                                                              │
@@ -42,13 +42,13 @@ execute_parallel_stream_to_cache() is called with:
                               ↓
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 3: CHUNK TIME RANGES                                                   │
-│ Each bracket's time range → multiple chunks                                 │
+│ Each bracket's time range --> multiple chunks                               │
 │                                                                             │
 │ Example (Bracket 1 with Jan-Jul range, 14-day chunks):                      │
-│ → Chunk 1.1: Jan 1-15 with filter {"logConfig_id": "64a..."}                │
-│ → Chunk 1.2: Jan 15-29 with filter {"logConfig_id": "64a..."}               │
-│ → ...                                                                       │
-│ → Chunk 1.13: Jun 17 - Jul 1                                                │
+│ --> Chunk 1.1: Jan 1-15 with filter {"logConfig_id": "64a..."}              │
+│ --> Chunk 1.2: Jan 15-29 with filter {"logConfig_id": "64a..."}             │
+│ --> ...                                                                     │
+│ --> Chunk 1.13: Jun 17 - Jul 1                                              │
 │                                                                             │
 │ Total: 13 chunks × 2 brackets = 26 work items                               │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -57,12 +57,12 @@ execute_parallel_stream_to_cache() is called with:
 │ STEP 4: PARALLEL RUST FETCH (rust_backend.fetch_chunks_bson)                │
 │ Rust backend processes all chunks concurrently in parallel workers          │
 │                                                                             │
-│ Worker 0: Grabs Chunk 1 → Fetch 45K docs → Write part_0000.parquet          │
-│ Worker 1: Grabs Chunk 2 → Fetch 52K docs → Write part_0001.parquet          │
+│ Worker 0: Grabs Chunk 1 --> Fetch 45K docs --> Write part_0000.parquet      │
+│ Worker 1: Grabs Chunk 2 --> Fetch 52K docs --> Write part_0001.parquet      │
 │ ...                                                                         │
-│ Worker 9: Grabs Chunk 10 → Fetch 38K docs → Write part_0009.parquet         │
+│ Worker 9: Grabs Chunk 10 --> Fetch 38K docs --> Write part_0009.parquet     │
 │                                                                             │
-│ All I/O happens in Rust (GIL-free, tokio async MongoDB client)             │
+│ All I/O happens in Rust (GIL-free, tokio async MongoDB client)              │
 │ Workers pull more chunks as they finish until queue is empty                │
 └─────────────────────────────────────────────────────────────────────────────┘
                               ↓
@@ -369,7 +369,7 @@ def execute_parallel_stream_to_cache(
     # happens in Rust with NO Python GIL contention.
     #
     # Python's role: memory planning, chunking, BSON serialization, result reading
-    # Rust's role: MongoDB client, async/parallel fetch, BSON→Arrow→Parquet
+    # Rust's role: MongoDB client, async/parallel fetch, BSON-->Arrow-->Parquet
     # =========================================================================
 
     # Validate mongo_uri is provided
