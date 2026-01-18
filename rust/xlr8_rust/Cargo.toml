@@ -1,0 +1,53 @@
+[package]
+name = "xlr8_rust"
+version = "0.1.0"
+edition = "2021"
+autobenches = false
+autotests = false  # Disable auto-detection of test files (we define them as [[bin]] targets)
+
+[lib]
+name = "_xlr8_rust"
+crate-type = ["cdylib", "rlib"]  # Added rlib for benchmarks
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"] }
+pyo3-arrow = "0.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+bson = { version = "2", features = ["serde_with"] }
+chrono = { version = "0.4", features = ["serde"] }
+arrow = { version = "53", features = ["prettyprint"] }
+parquet = { version = "53", features = ["arrow"] }
+base64 = "0.22"
+
+# Full Rust MongoDB client
+mongodb = { version = "3" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+futures = "0.3"
+rayon = "1.8"
+flume = "0.12.0"
+sysinfo = "0.32"  # For OS-level memory measurement
+
+# Profiling instrumentation (optional, controlled by feature flag)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+default = []
+tracy = ["tracing-tracy"]
+
+[dependencies.tracing-tracy]
+version = "0.11"
+optional = true
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[package.metadata.maturin]
+name = "xlr8._xlr8_rust"
+
+# Profile for profiling (adds debug info to release build)
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+

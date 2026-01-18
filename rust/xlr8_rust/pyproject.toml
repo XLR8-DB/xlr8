@@ -1,0 +1,14 @@
+[build-system]
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "xlr8-rust"
+version = "0.1.0"
+description = "Rust backend for XLR8"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.maturin]
+module-name = "_xlr8_rust"
+features = ["pyo3/extension-module"]

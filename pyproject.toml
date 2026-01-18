@@ -14,10 +14,19 @@ dependencies = [
     "pandas==1.5.0", #TODO: change this to >= when ready to publish
     "polars==0.15.1", #TODO: change this to >= when ready to publish
     "duckdb==0.6.0", #TODO: change this to >= when ready to publish
+    "orjson==3.8.1", #TODO: change this to >= when ready to publish
+    "xlr8-rust"
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/xlr8"]
+
+
+[tool.uv.sources]
+xlr8-rust = { path = "rust/xlr8_rust" }
+
+[tool.setuptools.package-data]
+xlr8 = ["py.typed", "**/*.pyi"]
 
 [dependency-groups]
 dev = [

@@ -221,6 +221,22 @@ wheels = [
 ]
 
 [[package]]
+name = "orjson"
+version = "3.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/e6/d012626dcf443e36ac1210be365d0a367beff7dd8b7029ace3006c948820/orjson-3.8.1.tar.gz", hash = "sha256:07c42de52dfef56cdcaf2278f58e837b26f5b5af5f1fd133a68c4af203851fc7", size = 860348, upload-time = "2022-10-25T15:42:40.36Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/90/0e/cf6d38d1d9452d04c5c2e0cdee33cc20b1fa763243a6d69354b32857e470/orjson-3.8.1-cp311-cp311-macosx_10_7_x86_64.whl", hash = "sha256:6802edf98f6918e89df355f56be6e7db369b31eed64ff2496324febb8b0aa43b", size = 145783, upload-time = "2022-10-25T15:45:49.109Z" },
+    { url = "https://files.pythonhosted.org/packages/fc/f3/442dfeb3fc6beef17d516e205c5e82b00a5e309fc5cbc8a0b7d52affdfa0/orjson-3.8.1-cp311-cp311-macosx_10_9_x86_64.macosx_11_0_arm64.macosx_10_9_universal2.whl", hash = "sha256:a4244f4199a160717f0027e434abb886e322093ceadb2f790ff0c73ed3e17662", size = 490365, upload-time = "2022-10-25T15:45:52.285Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/c4/396a78fed475a41780cf87132a531354f06b9e15e9c02557268fd228067b/orjson-3.8.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:6956cf7a1ac97523e96f75b11534ff851df99a6474a561ad836b6e82004acbb8", size = 260306, upload-time = "2022-10-25T16:27:50.71Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/5e/31fde14afef45158aa73b0f4a0993b8e55328957e0991700c25796dc3405/orjson-3.8.1-cp311-cp311-manylinux_2_17_armv7l.manylinux2014_armv7l.whl", hash = "sha256:0b4e3857dd2416b479f700e9bdf4fcec8c690d2716622397d2b7e848f9833e50", size = 280199, upload-time = "2022-10-25T16:27:52.705Z" },
+    { url = "https://files.pythonhosted.org/packages/65/50/cda437c6d4bc5edf5aeea33274e93f055fc2071525b6b32ab6c1eddd4eb5/orjson-3.8.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:f8873e490dea0f9cd975d66f84618b6fb57b1ba45ecb218313707a71173d764f", size = 273096, upload-time = "2022-10-25T15:58:20.51Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/18/6a66d497740fe8604c02605d9710fa86806659f072997e53251ee090cb85/orjson-3.8.1-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:124207d2cd04e845eaf2a6171933cde40aebcb8c2d7d3b081e01be066d3014b6", size = 249856, upload-time = "2022-10-25T16:48:39.217Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/7a/d1ca10b5d5455eb9dae1c600982f206942bce6e45e3012f3883179628283/orjson-3.8.1-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:d8ed77098c2e22181fce971f49a34204c38b79ca91c01d515d07015339ae8165", size = 143685, upload-time = "2022-10-25T16:05:46.256Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/f8/870c9e4249e7644751982451d159933955cfcb91f04e1a452568383bd6b8/orjson-3.8.1-cp311-none-win_amd64.whl", hash = "sha256:8623ac25fa0850a44ac845e9333c4da9ae5707b7cec8ac87cbe9d4e41137180f", size = 198936, upload-time = "2022-10-25T15:48:08.66Z" },
+]
+
+[[package]]
 name = "packaging"
 version = "25.0"
 source = { registry = "https://pypi.org/simple" }
@@ -491,10 +507,12 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
+    { name = "orjson" },
     { name = "pandas" },
     { name = "polars" },
     { name = "pyarrow" },
     { name = "pymongo" },
+    { name = "xlr8-rust" },
 ]
 
 [package.dev-dependencies]
@@ -508,10 +526,12 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "duckdb", specifier = "==0.6.0" },
+    { name = "orjson", specifier = "==3.8.1" },
     { name = "pandas", specifier = "==1.5.0" },
     { name = "polars", specifier = "==0.15.1" },
     { name = "pyarrow", specifier = "==10.0.1" },
     { name = "pymongo", specifier = "==3.12.0" },
+    { name = "xlr8-rust", directory = "rust/xlr8_rust" },
 ]
 
 [package.metadata.requires-dev]
@@ -521,3 +541,8 @@ dev = [
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "ruff", specifier = ">=0.8.0" },
 ]
+
+[[package]]
+name = "xlr8-rust"
+version = "0.1.0"
+source = { directory = "rust/xlr8_rust" }
