@@ -22,7 +22,7 @@ exposed via PyO3 bindings.
 Usage:
 ------
     from xlr8.rust_backend import encode_any_values_to_arrow
-    
+
     values = [42.5, "hello", None, True]
     arrow_array = encode_any_values_to_arrow(values)
 """
