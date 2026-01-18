@@ -198,18 +198,18 @@ from xlr8.analysis.brackets import (
 # =============================================================================
 
 
-@pytest.fixture
-def time_field():
+@pytest.fixture(name="time_field")
+def time_field_fixture():
     return "recordedAt"
 
 
-@pytest.fixture
-def t1():
+@pytest.fixture(name="t1")
+def t1_fixture():
     return datetime(2024, 1, 1, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def t2():
+@pytest.fixture(name="t2")
+def t2_fixture():
     return datetime(2024, 6, 1, tzinfo=timezone.utc)
 
 
@@ -301,8 +301,9 @@ class TestRejectionNeverAllowedOperators:
 
 
 class TestRejectionNestedOr:
-    """Test that nested $or (depth > 1) triggers SINGLE mode
-    (complex but executable).
+    """Test that nested $or (depth > 1) triggers SINGLE mode.
+
+    Complex but executable.
     """
 
     def test_nested_or_depth_2(self, time_field, t1, t2):
@@ -357,7 +358,7 @@ class TestSingleBracketNegationOperators:
                 },
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, _reason, brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert len(brackets) == 1  # Single or merged
 
@@ -369,7 +370,7 @@ class TestSingleBracketNegationOperators:
                 {"status": {"$ne": "deleted"}, time_field: {"$gte": t1, "$lt": t2}},
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, _reason, brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert len(brackets) == 1
 
@@ -384,7 +385,7 @@ class TestSingleBracketNegationOperators:
                 },
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, _reason, brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert len(brackets) == 1
 
@@ -399,7 +400,7 @@ class TestSingleBracketNegationOperators:
                 },
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, _reason, brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert len(brackets) == 1
 
@@ -459,7 +460,7 @@ class TestSingleBracketOverlapProneOperators:
                 {"region_id": oid2, time_field: {"$gte": t1, "$lt": t2}},
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, _reason, brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert (
             len(brackets) == 2
@@ -499,7 +500,7 @@ class TestSingleBracketDifferentFieldSets:
                 },
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, reason, _brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert "single-bracket" in reason
 
@@ -514,15 +515,15 @@ class TestSingleBracketInOverlapWithDifferentTime:
     def test_overlapping_in_different_time_unsafe(self, time_field):
         """Overlapping $in with different time = single-bracket (no transform)."""
         t0 = datetime(2024, 1, 1, tzinfo=timezone.utc)
-        t1 = datetime(2024, 1, 2, tzinfo=timezone.utc)
-        t2 = datetime(2024, 1, 29, tzinfo=timezone.utc)
+        t1_local = datetime(2024, 1, 2, tzinfo=timezone.utc)
+        t2_local = datetime(2024, 1, 29, tzinfo=timezone.utc)
         t3 = datetime(2024, 1, 30, tzinfo=timezone.utc)
 
         query = {
             "$or": [
                 {
                     "field": {"$in": [1, 2, 3]},
-                    time_field: {"$gte": t1, "$lt": t2},
+                    time_field: {"$gte": t1_local, "$lt": t2_local},
                 },  # Narrower
                 {
                     "field": {"$in": [2, 3, 4]},
@@ -530,7 +531,7 @@ class TestSingleBracketInOverlapWithDifferentTime:
                 },  # Wider, overlaps 2,3
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, reason, _brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert "single-bracket" in reason
 
@@ -550,7 +551,7 @@ class TestSingleBracketInOverlapWithDifferentTime:
                 },
             ]
         }
-        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        ok, reason, _brackets, _bounds = build_brackets_for_find(query, time_field)
         assert ok is True
         assert "single-bracket" in reason
 
@@ -724,8 +725,9 @@ class TestMergeOptimizationBlocked:
         assert "$or" in brackets[0].static_filter
 
     def test_partial_time_range_not_merged(self, time_field, t1, t2):
-        """Partial time range (only $gte) -> SINGLE mode
-        (valid but not parallelizable).
+        """Partial time range (only $gte) -> SINGLE mode.
+
+        Valid but not parallelizable.
         """
         query = {
             "$or": [
@@ -745,8 +747,9 @@ class TestMergeOptimizationBlocked:
         assert "unbounded" in reason.lower() or "partial" in reason.lower()
 
     def test_unbounded_branch_not_merged(self, time_field, t1, t2):
-        """Branch with no time constraint -> SINGLE mode
-        (valid but not parallelizable).
+        """Branch with no time constraint -> SINGLE mode.
+
+        Valid but not parallelizable.
         """
         query = {
             "$or": [
@@ -929,8 +932,7 @@ class TestRealWorldScenarios:
             $or: [
                 {device_id: X, sensor_id: {$nin: [...]},
                  recordedAt: {start+1day, now-1day}},
-                {device_id: X, sensor_id: {$nin: [...]},
-                 recordedAt: {start, now}},
+                {device_id: X, sensor_id: {$nin: [...]}, recordedAt: {start, now}},
             ]
 
         Expected: MERGE into single bracket because:
@@ -1155,8 +1157,9 @@ class TestBuildBracketsThreeTier:
         assert bounds == (t1, t2)
 
     def test_parallel_mode_or_query(self):
-        """$or query with bounded branches should return PARALLEL
-        with multiple brackets.
+        """$or query with bounded branches should return PARALLEL.
+
+        Should produce multiple brackets.
         """
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -1372,8 +1375,9 @@ class TestBuildBracketsThreeTier:
         assert brackets == []
 
     def test_parallel_mode_backwards_compatible(self):
-        """PARALLEL mode should work with old code
-        expecting (bool, str, list, tuple).
+        """PARALLEL mode should work with old code.
+
+        Compatibility: (bool, str, list, tuple).
         """
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -1405,7 +1409,7 @@ class TestBoundaryOperatorExtraction:
 
     def test_gte_lt_default_operators(self):
         """$gte (inclusive) and $lt (exclusive) - the most common case."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -1422,7 +1426,7 @@ class TestBoundaryOperatorExtraction:
 
     def test_gte_lte_both_inclusive(self):
         """$gte and $lte - both boundaries included."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -1439,7 +1443,7 @@ class TestBoundaryOperatorExtraction:
 
     def test_gt_lt_both_exclusive(self):
         """$gt and $lt - both boundaries excluded."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -1456,7 +1460,7 @@ class TestBoundaryOperatorExtraction:
 
     def test_gt_lte_mixed_operators(self):
         """$gt (exclusive) and $lte (inclusive) - mixed boundaries."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -1473,7 +1477,7 @@ class TestBoundaryOperatorExtraction:
 
     def test_equality_is_both_inclusive(self):
         """Direct equality should be inclusive on both ends."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 15, tzinfo=timezone.utc)
 
@@ -1550,7 +1554,7 @@ class TestBoundaryIntersection:
 
     def test_intersection_uses_most_restrictive(self):
         """$and with overlapping bounds should use most restrictive operators."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 1, 31, tzinfo=timezone.utc)
@@ -1581,8 +1585,11 @@ class TestBoundaryUnion:
     """Test that bound unions handle inclusivity correctly."""
 
     def test_or_union_preserves_inclusive_if_any(self):
-        """$or with different end operators uses inclusive if any branch uses it."""
-        from src.xlr8.analysis.inspector import extract_time_bounds_recursive
+        """$or with different end operators.
+
+        Use inclusive if any branch uses it.
+        """
+        from xlr8.analysis.inspector import extract_time_bounds_recursive
 
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 1, 31, tzinfo=timezone.utc)
@@ -1613,7 +1620,7 @@ class TestTimeRangeBoundaryDefaults:
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
 
-        from src.xlr8.analysis.brackets import TimeRange
+        from xlr8.analysis.brackets import TimeRange
 
         # Create with minimal args
         tr = TimeRange(lo=t1, hi=t2, is_full=True)
@@ -1627,7 +1634,7 @@ class TestTimeRangeBoundaryDefaults:
         t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
         t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
 
-        from src.xlr8.analysis.brackets import TimeRange
+        from xlr8.analysis.brackets import TimeRange
 
         # Create with explicit inclusive bounds
         tr = TimeRange(
