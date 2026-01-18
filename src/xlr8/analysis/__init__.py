@@ -5,13 +5,13 @@ This module provides utilities for analyzing MongoDB queries and
 creating optimal execution plans for parallel processing.
 """
 
-from src.xlr8.analysis.brackets import (
+from .brackets import (
     build_brackets_for_find,
 )
-from src.xlr8.analysis.chunker import (
+from .chunker import (
     chunk_time_range,
 )
-from src.xlr8.analysis.inspector import (
+from .inspector import (
     # Operator classification sets
     ALWAYS_ALLOWED,
     CONDITIONAL,
@@ -20,6 +20,8 @@ from src.xlr8.analysis.inspector import (
     ValidationResult,
     check_conditional_operators,
     extract_time_bounds_recursive,
+    generate_sort_sql,
+    get_sort_field_info,
     has_forbidden_ops,
     is_chunkable_query,
     normalize_datetime,
@@ -27,6 +29,7 @@ from src.xlr8.analysis.inspector import (
     or_depth,
     split_global_and,
     validate_query_for_chunking,
+    validate_sort_field,
 )
 
 __all__ = [
@@ -38,6 +41,9 @@ __all__ = [
     "ValidationResult",
     "has_forbidden_ops",
     "validate_query_for_chunking",
+    "validate_sort_field",
+    "get_sort_field_info",
+    "generate_sort_sql",
     "check_conditional_operators",
     # inspector - analysis
     "or_depth",
