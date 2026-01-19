@@ -13,7 +13,7 @@
 <p align="center">
   <a href="https://pypi.org/project/xlr8/"><img src="https://img.shields.io/pypi/v/xlr8.svg" alt="PyPI version"/></a>
   <a href="https://pypi.org/project/xlr8/"><img src="https://img.shields.io/pypi/pyversions/xlr8.svg" alt="Python versions"/></a>
-  <a href="https://github.com/XLR8-DB/xlr8/blob/main/LICENSE"><img src="https://img.shields.io/github/license/XLR8-DB/xlr8.svg" alt="License"/></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
 </p>
 
 <p align="center">
@@ -28,11 +28,13 @@
 # Before: PyMongo
 df = pd.DataFrame(list(collection.find(query)))
 
+xlr8_collction = accelerate(collection, schema, mongodb_uri)
+                                                ^ Union(str, callback)
 # After: XLR8 - just wrap and go!
 df = xlr8_collection.find(query).to_dataframe()
 ```
 
-That's it. Same query syntax, same DataFrame output—just faster.
+That's it. Same query syntax, same DataFrame output-just faster.
 
 ---
 
@@ -42,13 +44,13 @@ When running analytical queries over large MongoDB collections, you encounter tw
 
 ```mermaid
 flowchart LR
-    subgraph Bottleneck1["⏳ I/O Bottleneck"]
+    subgraph Bottleneck1["I/O Bottleneck"]
         A1[Python] -->|"Single cursor"| B1[MongoDB]
         B1 -->|"Network RTT"| C1[Wait...]
         C1 -->|"Next batch"| A1
     end
     
-    subgraph Bottleneck2["🔒 CPU Bottleneck"]
+    subgraph Bottleneck2["CPU Bottleneck"]
         A2[Python GIL] -->|"Holds lock"| B2[BSON decode]
         B2 -->|"Still locked"| C2[Build dict]
         C2 -->|"Still locked"| D2[Next doc]
@@ -59,7 +61,7 @@ flowchart LR
 
 **CPU/GIL Bound**: Even with the data in hand, Python's Global Interpreter Lock (GIL) means BSON decoding and DataFrame construction happen on a single core.
 
-These aren't PyMongo limitations—they're inherent to Python's design. XLR8 provides a solution.
+These aren't PyMongo limitations-they're inherent to Python's design. XLR8 provides a solution.
 
 ---
 
@@ -67,26 +69,39 @@ These aren't PyMongo limitations—they're inherent to Python's design. XLR8 pro
 
 ```mermaid
 flowchart LR
-    subgraph Solution["XLR8: Parallel + GIL-Free"]
-        direction TB
-        Q[Your Query] --> S[Split into chunks]
-        S --> R[Rust takes over]
-        R --> W1[Worker 1]
-        R --> W2[Worker 2]
-        R --> W3[Worker 3]
-        R --> W4[Worker N]
-        W1 --> P1[Parquet]
-        W2 --> P2[Parquet]
-        W3 --> P3[Parquet]
-        W4 --> P4[Parquet]
-        P1 --> DF[DataFrame]
-        P2 --> DF
-        P3 --> DF
-        P4 --> DF
+    subgraph Solution["XLR8: Rust Backend (GIL-Free) + Tokio Async + Cache-First"]
+        direction LR
+
+        Q["Your Query<br/>cursor.to_dataframe(...)"] --> GIL["Python releases GIL<br/>(py.allow_threads)"]
+        GIL --> RT["Rust Backend<br/>Tokio async runtime"]
+
+        RT --> PLAN["Execution plan<br/>chunking + worker count + RAM budget"]
+
+        PLAN --> W1["Worker 1<br/>async fetch + BSON→Arrow"]
+        PLAN --> W2["Worker 2<br/>async fetch + BSON→Arrow"]
+        PLAN --> W3["Worker 3<br/>async fetch + BSON→Arrow"]
+        PLAN --> WN["Worker N<br/>async fetch + BSON→Arrow"]
+
+        W1 --> M1{"RAM limit reached?<br/>flush_ram_limit_mb"}
+        W2 --> M2{"RAM limit reached?<br/>flush_ram_limit_mb"}
+        W3 --> M3{"RAM limit reached?<br/>flush_ram_limit_mb"}
+        WN --> MN{"RAM limit reached?<br/>flush_ram_limit_mb"}
+
+        M1 -->|flush| C1["Write Parquet shard<br/>.cache/<hash>/part_0001.parquet"]
+        M2 -->|flush| C2["Write Parquet shard<br/>.cache/<hash>/part_0002.parquet"]
+        M3 -->|flush| C3["Write Parquet shard<br/>.cache/<hash>/part_0003.parquet"]
+        MN -->|flush| CN["Write Parquet shard<br/>.cache/<hash>/part_00NN.parquet"]
+
+        C1 --> READ["Read shards (Arrow/DuckDB)"]
+        C2 --> READ
+        C3 --> READ
+        CN --> READ
+
+        READ --> DF["Assemble final DataFrame"]
     end
 ```
 
-XLR8 releases Python's GIL and hands execution to a Rust backend powered by Tokio's async runtime. Multiple workers fetch from MongoDB in parallel, convert BSON to Arrow, and write Parquet shards—all without touching the GIL.
+XLR8 releases Python's GIL and hands execution to a Rust backend powered by Tokio's async runtime. Multiple workers fetch from MongoDB in parallel, convert BSON to Arrow, and write Parquet shards-all without touching the GIL.
 
 The result? Your analytical queries run **significantly faster**, especially for large result sets.
 
@@ -164,22 +179,25 @@ Queries are split into time-based chunks. Each worker maintains its own MongoDB 
 <tr>
 <td width="50%" valign="top">
 
-### 💾 Transparent Parquet Caching
-Results are cached as Parquet files. Subsequent runs with the same query skip MongoDB entirely—ideal for iterative analysis.
+### 💾 Query aware cache
+Data is stored in the query-hash folder, cursors can be supplied a start and end date to filter through the cache.
 
 </td>
 <td width="50%" valign="top">
 
-### 🎯 Smart Query Splitting
-`$or` and `$in` queries are automatically split into independent brackets, each parallelized separately.
+`$or` and `$in` queries are automatically split into **independent “brackets”** that can be executed in parallel.
 
+- **`$or`**: each branch becomes its own bracket (while shared filters are kept as global constraints).
+- **`$in`**: the list is expanded into one bracket per value (e.g., 3 values → 3 parallel brackets).
+
+Before execution, XLR8 builds an **execution plan** that detects **overlapping brackets** (cases where multiple brackets could match the same document) and ensures results are **correct and deterministic**. This behavior is covered by extensive tests to prevent duplicates or missing rows. 
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
 ### 🔀 DuckDB K-Way Merge
-When sorting is required, DuckDB performs a GIL-free K-way merge across sorted shards—O(N log K) complexity.
+When sorting is required, DuckDB performs a GIL-free K-way merge across sorted shards-O(N log K) complexity.
 
 </td>
 <td width="50%" valign="top">
@@ -199,7 +217,7 @@ Set `flush_ram_limit_mb` to control RAM per worker. Process large datasets witho
 <td width="50%" valign="top">
 
 ### 📤 Stream to Data Lakes
-`stream_to_callback()` partitions data by time and custom fields—perfect for S3/GCS ingestion pipelines.
+`stream_to_callback()` partitions data by time and custom fields-perfect for S3/GCS ingestion pipelines.
 
 </td>
 </tr>
@@ -213,16 +231,16 @@ XLR8's architecture provides specific advantages in cloud environments:
 
 ```mermaid
 flowchart TB
-    subgraph Benefits["☁️ Cloud-Native Advantages"]
+    subgraph Benefits["Compute savings"]
         direction LR
         
-        subgraph Speed["⚡ Faster Queries"]
+        subgraph Speed["Faster Queries"]
             S1[Parallel fetch] --> S2[Reduced container up time]
             S2 --> S3[Lower cloud billable time]
         end
 
         
-        subgraph Memory["📉 Memory Control"]
+        subgraph Memory["Memory Control"]
             M1[Predictable memory usage]
             M1 --> M2[Smaller container instances]
         end
@@ -527,7 +545,7 @@ schema = Schema(
 |-----------|------|---------|-------------|
 | `chunking_granularity` | `timedelta` | `None` | Time chunk size (required for parallel) |
 | `max_workers` | `int` | `4` | Parallel worker count |
-| `flush_ram_limit_mb` | `int` | `512` | RAM limit per worker |
+| `flush_ram_limit_mb` | `int` | `512` | total ram limit |
 | `row_group_size` | `int` | `None` | Parquet row group size |
 | `cache_read` | `bool` | `True` | Read from cache if available |
 | `cache_write` | `bool` | `True` | Write results to cache |
@@ -602,15 +620,6 @@ cursor = xlr8_col.find(
 ```bash
 git clone https://github.com/XLR8-DB/xlr8.git
 cd xlr8
-uv sync --all-extras
-uv run maturin develop --release
+uv sync
 uv run pytest
 ```
-
----
-
-<p align="center">
-  <a href="https://github.com/XLR8-DB/xlr8">
-    <img src="https://img.shields.io/github/stars/XLR8-DB/xlr8?style=social" alt="GitHub stars"/>
-  </a>
-</p>
