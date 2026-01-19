@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/xlr8/"><img src="https://img.shields.io/pypi/v/xlr8.svg" alt="PyPI version"/></a>
-  <a href="https://pypi.org/project/xlr8/"><img src="https://img.shields.io/pypi/pyversions/xlr8.svg" alt="Python versions"/></a>
+    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python versions"/></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
 </p>
 
