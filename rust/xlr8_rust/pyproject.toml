@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "xlr8-rust"
-version = "0.1.6"
+version = "0.1.7b1"
 description = "Rust backend for XLR8"
 requires-python = ">=3.11"
 dependencies = []

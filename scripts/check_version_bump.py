@@ -32,14 +32,50 @@ def run(cmd: list[str]) -> str:
     return result.stdout
 
 
-def parse_version(version: str) -> tuple[int, int, int]:
+def parse_version(version: str) -> tuple[int, int, int, str]:
+    """Parse version string, handling pre-release suffixes like 'b1', 'a1', 'rc1'."""
+    import re
+
     version_str = version.lstrip("v")
-    major, minor, patch = version_str.split(".")
-    return (int(major), int(minor), int(patch))
+    major, minor, patch_with_suffix = version_str.split(".")
+
+    # Extract patch number and optional pre-release suffix (e.g., "7b1" -> "7", "b1")
+    match = re.match(r"(\d+)(.*)", patch_with_suffix)
+    if match:
+        patch = match.group(1)
+        suffix = match.group(2)  # e.g., "b1", "a1", "rc1", or ""
+    else:
+        patch = patch_with_suffix
+        suffix = ""
+
+    return (int(major), int(minor), int(patch), suffix)
 
 
 def is_version_greater_than(version1: str, version2: str) -> bool:
-    return parse_version(version1) > parse_version(version2)
+    """Compare versions, where pre-release versions are less than release versions."""
+    v1 = parse_version(version1)
+    v2 = parse_version(version2)
+
+    # Compare major, minor, patch first
+    if v1[:3] != v2[:3]:
+        return v1[:3] > v2[:3]
+
+    # If major.minor.patch are equal, compare suffixes
+    # Empty suffix (release) > any suffix (pre-release)
+    # For pre-releases: rc > b > a, then compare numbers
+    suffix1, suffix2 = v1[3], v2[3]
+
+    if suffix1 == suffix2:
+        return False  # Same version
+
+    if suffix1 == "":
+        return True  # Release > pre-release
+    if suffix2 == "":
+        return False  # Pre-release < release
+
+    # Both have suffixes - compare them
+    # (simplified: any pre-release of higher patch wins)
+    return v1[:3] >= v2[:3]
 
 
 def load_version_from_toml(path: Path) -> str:

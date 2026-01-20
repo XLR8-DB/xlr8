@@ -1,6 +1,6 @@
 [package]
 name = "xlr8_rust"
-version = "0.1.6"
+version = "0.1.7-beta.1"
 edition = "2021"
 description = "Rust backend for XLR8 - high-performance MongoDB acceleration"
 license = "Apache-2.0"

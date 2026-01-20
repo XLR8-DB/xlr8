@@ -74,7 +74,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from src.xlr8.analysis.inspector import (
+from xlr8.analysis.inspector import (
     ChunkabilityMode,
     extract_time_bounds_recursive,
     has_forbidden_ops,
