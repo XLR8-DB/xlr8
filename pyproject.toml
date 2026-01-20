@@ -8,6 +8,22 @@ version = "0.1.1"
 description = "High-performance database read acceleration layer for MongoDB. Auto-chunks and parallelizes queries across multiple-workers, streams results to parquet with intelligent caching and memory-bounded execution, option to stream data directly to any data lake. Same PyMongo API but dramatically faster results with RUST backend for CPU-heavy tasks."
 readme = "README.md"
 requires-python = ">=3.11"
+license = "Apache-2.0"
+authors = [
+    { name = "Kapil Parekh" }
+]
+keywords = ["mongodb", "parquet", "pandas", "polars", "database", "acceleration", "caching"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Database",
+]
 dependencies = [
     "pyarrow>14.0.1",
     "pymongo[srv]>3.12.0",
