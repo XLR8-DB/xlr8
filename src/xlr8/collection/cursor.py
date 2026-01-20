@@ -1557,8 +1557,7 @@ class XLR8Cursor:
                     if field in df.columns
                 ]
                 if sort_fields:
-                    # Polars uses `reverse` (not `descending`) in older versions.
-                    df = df.sort(sort_fields, reverse=descending)
+                    df = df.sort(sort_fields, descending=descending)
 
             # Apply skip/limit
             if self._skip:
@@ -1701,7 +1700,7 @@ class XLR8Cursor:
                 ]
                 if sort_fields:
                     # Polars uses `reverse` (not `descending`) in older versions.
-                    df = df.sort(sort_fields, reverse=descending)
+                    df = df.sort(sort_fields, descending=descending)
 
         # Apply skip/limit
         if self._skip:

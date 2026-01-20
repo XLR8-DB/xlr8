@@ -22,21 +22,9 @@ from typing import (
     Union,
 )
 
-try:
-    import pandas as pd
-except ImportError:  # pragma: no cover
-    pd = Any  # type: ignore
-
-try:
-    import polars as pl
-except ImportError:  # pragma: no cover
-    pl = Any  # type: ignore
-
-try:
-    import pyarrow as pa
-except ImportError:  # pragma: no cover
-    pa = Any  # type: ignore
-
+import pandas as pd
+import polars as pl
+import pyarrow as pa
 from pymongo.cursor import Cursor as PyMongoCursor
 from pymongo.cursor import CursorType
 

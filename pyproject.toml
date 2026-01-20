@@ -4,18 +4,20 @@ build-backend = "hatchling.build"
 
 [project]
 name = "xlr8"
-version = "0.1.0"
+version = "0.1.1"
 description = "High-performance database read acceleration layer for MongoDB. Auto-chunks and parallelizes queries across multiple-workers, streams results to parquet with intelligent caching and memory-bounded execution, option to stream data directly to any data lake. Same PyMongo API but dramatically faster results with RUST backend for CPU-heavy tasks."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "pyarrow==10.0.1",  #TODO: change this to >= when ready to publish
-    "pymongo==3.12.0", #TODO: change this to >= when ready to publish
-    "pandas==1.5.0", #TODO: change this to >= when ready to publish
-    "polars==0.15.1", #TODO: change this to >= when ready to publish
-    "duckdb==0.6.0", #TODO: change this to >= when ready to publish
-    "orjson==3.8.1", #TODO: change this to >= when ready to publish
-    "xlr8-rust"
+    "pyarrow>14.0.1",
+    "pymongo[srv]>3.12.0",
+    "pandas>1.5.0",
+    "polars>0.15.1",
+    "duckdb>0.6.0",
+    "orjson>3.8.1",
+    "xlr8-rust",
+    "psutil",
+    "python-dotenv",
 ]
 
 [tool.hatch.build.targets.wheel]

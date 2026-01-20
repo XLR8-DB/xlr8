@@ -564,13 +564,17 @@ class ParquetReader:
             ... )
         """
         # Build PyArrow filter for date range (predicate pushdown)
+        # Convert datetime to PyArrow timestamp[ms] to match Parquet column type (no tz)
         filters = None
         if time_field and (start_date or end_date):
             filter_conditions = []
             if start_date:
-                filter_conditions.append((time_field, ">=", start_date))
+                # Convert to ms timestamp (no tz) to match Parquet storage
+                start_ts = pa.scalar(start_date, type=pa.timestamp("ms"))
+                filter_conditions.append((time_field, ">=", start_ts))
             if end_date:
-                filter_conditions.append((time_field, "<", end_date))
+                end_ts = pa.scalar(end_date, type=pa.timestamp("ms"))
+                filter_conditions.append((time_field, "<", end_ts))
             if filter_conditions:
                 filters = filter_conditions
 
@@ -579,16 +583,28 @@ class ParquetReader:
             if not self.parquet_files:
                 return pl.DataFrame()
 
-            # Polars can read multiple parquet files efficiently
-            # Note: Polars handles filters differently, apply post-read
-            df = pl.read_parquet(self.parquet_files)
+            # Use scan_parquet for lazy evaluation with predicate pushdown
+            # This only reads the row groups that match the filter conditions
+            lf = pl.scan_parquet(self.parquet_files)
 
-            # Apply date filter post-read for Polars
+            # Apply date filter with predicate pushdown (reads only matching data)
+            # Convert datetime to naive (no timezone) to match Parquet column dtype
             if time_field and (start_date or end_date):
                 if start_date:
-                    df = df.filter(pl.col(time_field) >= start_date)
+                    start_naive = (
+                        start_date.replace(tzinfo=None)
+                        if start_date.tzinfo
+                        else start_date
+                    )
+                    lf = lf.filter(pl.col(time_field) >= start_naive)
                 if end_date:
-                    df = df.filter(pl.col(time_field) < end_date)
+                    end_naive = (
+                        end_date.replace(tzinfo=None) if end_date.tzinfo else end_date
+                    )
+                    lf = lf.filter(pl.col(time_field) < end_naive)
+
+            # Collect executes the query with predicate pushdown
+            df = lf.collect()
 
             return self._process_dataframe(
                 df, engine, schema, coerce, any_type_strategy
@@ -618,8 +634,6 @@ class ParquetReader:
                 return pd.DataFrame()
 
             # Concatenate Arrow tables
-            import pyarrow as pa
-
             combined_table = pa.concat_tables(tables)
 
             # FAST PATH: Decode Any-typed struct columns directly in Arrow

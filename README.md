@@ -1,5 +1,5 @@
 <p align="center">
-    <img src="./src/XLR8_logo.png" alt="XLR8 Logo" width="360"/>
+    <img src=".github/XLR8_logo.png" alt="XLR8 Logo" width="360"/>
 </p>
 
 <p align="center">
