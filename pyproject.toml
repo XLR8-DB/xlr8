@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "xlr8"
-version = "0.1.4"
+version = "0.1.5"
 description = "High-performance database read acceleration layer for MongoDB. Auto-chunks and parallelizes queries across multiple-workers, streams results to parquet with intelligent caching and memory-bounded execution, option to stream data directly to any data lake. Same PyMongo API but dramatically faster results with RUST backend for CPU-heavy tasks."
 readme = "README_PYPI.md"
 requires-python = ">=3.11"

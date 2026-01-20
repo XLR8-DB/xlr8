@@ -57,17 +57,43 @@ jobs:
             echo "Tag $TAG_NAME is new; proceeding.";
           fi
 
-  # Build wheels for each platform and Python version
-  build-wheels:
+  # Build Linux wheels (x86_64 and aarch64)
+  build-linux:
     needs: check-version
     if: needs.check-version.outputs.release_needed == 'true'
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: ["3.11", "3.12", "3.13"]
+        target: [x86_64, aarch64]
 
-    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          command: build
+          args: --release --out dist --interpreter python3.11 python3.12 python3.13
+          manylinux: auto
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist/*.whl
+
+  # Build Windows wheels
+  build-windows:
+    needs: check-version
+    if: needs.check-version.outputs.release_needed == 'true'
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
 
     steps:
       - name: Checkout
@@ -83,14 +109,44 @@ jobs:
         with:
           command: build
           args: --release --out dist
-          manylinux: auto
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Upload wheels
         uses: actions/upload-artifact@v4
         with:
-          name: wheels-${{ matrix.os }}-py${{ matrix.python-version }}
+          name: wheels-windows-py${{ matrix.python-version }}
+          path: dist/*.whl
+
+  # Build macOS wheels (ARM and x86_64)
+  build-macos:
+    needs: check-version
+    if: needs.check-version.outputs.release_needed == 'true'
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [x86_64-apple-darwin, aarch64-apple-darwin]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Build wheels
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          command: build
+          args: --release --out dist
+
+      - name: Upload wheels
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.target }}-py${{ matrix.python-version }}
           path: dist/*.whl
 
   # Build source distribution
@@ -117,7 +173,7 @@ jobs:
 
   # Create release and publish to PyPI
   release:
-    needs: [check-version, build-wheels, build-sdist]
+    needs: [check-version, build-linux, build-windows, build-macos, build-sdist]
     if: needs.check-version.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
 
@@ -137,7 +193,8 @@ jobs:
           mkdir -p dist
           find dist_all -type f -name "*.whl" -exec cp -v {} dist/ \;
           find dist_all -type f -name "*.tar.gz" -exec cp -v {} dist/ \;
-          echo "=== dist ===" && ls -la dist/
+          echo "=== All wheels ===" && ls -la dist/
+          echo "=== Wheel count: $(ls dist/*.whl | wc -l) ==="
 
       - name: Create and push tag
         run: |

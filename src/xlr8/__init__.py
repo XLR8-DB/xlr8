@@ -52,12 +52,16 @@ client.close()
 
 from __future__ import annotations
 
+from importlib.metadata import version as _get_version
 from typing import TYPE_CHECKING
 
 from .schema import types as Types
 from .schema.schema import Schema
 
-__version__ = "0.1.0"
+try:
+    __version__ = _get_version("xlr8")
+except Exception:
+    __version__ = "0.0.0.dev"  # Fallback for editable installs without metadata
 
 # Lazy loader for rust_backend to avoid import errors when Rust isn't built yet
 # This allows `from xlr8 import rust_backend` to work without importing at module load

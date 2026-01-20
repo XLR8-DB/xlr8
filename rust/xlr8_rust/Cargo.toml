@@ -1,7 +1,10 @@
 [package]
 name = "xlr8_rust"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
+description = "Rust backend for XLR8 - high-performance MongoDB acceleration"
+license = "Apache-2.0"
+repository = "https://github.com/XLR8-DB/xlr8"
 autobenches = false
 autotests = false  # Disable auto-detection of test files (we define them as [[bin]] targets)
 
