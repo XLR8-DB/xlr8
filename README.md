@@ -21,7 +21,6 @@
 </p>
 
 ---
-https://github.com/bmhtech07/xlr8/blob/main/README.md
 ## Minimal Code Changes
 
 ```python
