@@ -28,7 +28,7 @@
 # Before: PyMongo
 df = pd.DataFrame(list(collection.find(query)))
 
-xlr8_collction = accelerate(collection, schema, mongodb_uri)
+xlr8_collection = accelerate(collection, schema, mongodb_uri)
                                                 ^ Union(str, callback)
 # After: XLR8 - just wrap and go!
 df = xlr8_collection.find(query).to_dataframe()
