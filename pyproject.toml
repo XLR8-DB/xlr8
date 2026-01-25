@@ -44,10 +44,10 @@ features = ["pyo3/extension-module"]
 
 [dependency-groups]
 dev = [
-    "ruff>=0.8.0",
-    "pre-commit>=4.0.0",
-    "pytest>=8.0.0",
-    "mypy>=1.8.0",
+    "ruff>=0.8.0,<=0.14.8",
+    "pre-commit>=4.0.0,<=4.5.0",
+    "pytest>=8.0.0,<=9.0.1",
+    "mypy>=1.8.0,<=1.19.0",
 ]
 
 [tool.ruff]

@@ -21,16 +21,17 @@
 </p>
 
 ---
-
+https://github.com/bmhtech07/xlr8/blob/main/README.md
 ## Minimal Code Changes
 
 ```python
 # Before: PyMongo
 df = pd.DataFrame(list(collection.find(query)))
 
-xlr8_collction = accelerate(collection, schema, mongodb_uri)
-                                                ^ Union(str, callback)
+
 # After: XLR8 - just wrap and go!
+xlr8_collection = accelerate(collection, schema, mongodb_uri)
+                                                ^ Union(str, callback)
 df = xlr8_collection.find(query).to_dataframe()
 ```
 

@@ -767,9 +767,9 @@ class TestEdgeCases:
         assert valid, "Empty query has no forbidden operators"
         # But it's not chunkable due to missing time bounds - now returns SINGLE mode
         result = is_chunkable_query({}, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Empty query should be SINGLE mode (no time filtering)"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Empty query should be SINGLE mode (no time filtering)"
+        )
         assert result.mode in (ChunkabilityMode.PARALLEL, ChunkabilityMode.SINGLE)
 
     def test_time_field_only(self, time_field, t1, t2):
@@ -785,9 +785,9 @@ class TestEdgeCases:
         query = {**valid_time_range, "config": {"$near": "value"}}
         valid, reason = validate_query_for_chunking(query, time_field)
         # This IS using $near as an operator key, so it should be rejected
-        assert (
-            not valid
-        ), "Using $near (even if intended as weird field) should be rejected"
+        assert not valid, (
+            "Using $near (even if intended as weird field) should be rejected"
+        )
 
     def test_operator_in_string_value(self, time_field, valid_time_range):
         """Operator name in string value - should be allowed."""
@@ -979,15 +979,15 @@ class TestOperatorSetsIntegrity:
 
     def test_sets_are_disjoint(self):
         """Operator sets should not overlap."""
-        assert ALWAYS_ALLOWED.isdisjoint(
-            CONDITIONAL
-        ), "ALWAYS_ALLOWED and CONDITIONAL overlap"
-        assert ALWAYS_ALLOWED.isdisjoint(
-            NEVER_ALLOWED
-        ), "ALWAYS_ALLOWED and NEVER_ALLOWED overlap"
-        assert CONDITIONAL.isdisjoint(
-            NEVER_ALLOWED
-        ), "CONDITIONAL and NEVER_ALLOWED overlap"
+        assert ALWAYS_ALLOWED.isdisjoint(CONDITIONAL), (
+            "ALWAYS_ALLOWED and CONDITIONAL overlap"
+        )
+        assert ALWAYS_ALLOWED.isdisjoint(NEVER_ALLOWED), (
+            "ALWAYS_ALLOWED and NEVER_ALLOWED overlap"
+        )
+        assert CONDITIONAL.isdisjoint(NEVER_ALLOWED), (
+            "CONDITIONAL and NEVER_ALLOWED overlap"
+        )
 
     def test_all_operators_start_with_dollar(self):
         """All operators should start with $."""
@@ -1000,13 +1000,13 @@ class TestOperatorSetsIntegrity:
 
     def test_expected_operator_counts(self):
         """Verify operator count matches documentation."""
-        assert (
-            len(ALWAYS_ALLOWED) == 23
-        ), f"Expected 23 ALWAYS_ALLOWED, got {len(ALWAYS_ALLOWED)}"
+        assert len(ALWAYS_ALLOWED) == 23, (
+            f"Expected 23 ALWAYS_ALLOWED, got {len(ALWAYS_ALLOWED)}"
+        )
         assert len(CONDITIONAL) == 3, f"Expected 3 CONDITIONAL, got {len(CONDITIONAL)}"
-        assert (
-            len(NEVER_ALLOWED) == 17
-        ), f"Expected 17 NEVER_ALLOWED, got {len(NEVER_ALLOWED)}"
+        assert len(NEVER_ALLOWED) == 17, (
+            f"Expected 17 NEVER_ALLOWED, got {len(NEVER_ALLOWED)}"
+        )
 
     def test_specific_operators_in_correct_sets(self):
         """Spot check specific operators are in correct sets."""
@@ -1095,9 +1095,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Query with all unbounded $or branches should be SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Query with all unbounded $or branches should be SINGLE mode"
+        )
 
     def test_or_with_mixed_partial_bounds(self):
         """$or with branches having different partial bounds should return
@@ -1114,9 +1114,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Query with mixed partial bounds should be SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Query with mixed partial bounds should be SINGLE mode"
+        )
 
     # -------------------------------------------------------------------------
     # CRITICAL: $or Branches Not Referencing Time Field
@@ -1141,9 +1141,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Query where $or branch doesn't reference time field should be SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Query where $or branch doesn't reference time field should be SINGLE mode"
+        )
 
     def test_or_with_all_branches_not_referencing_time(self):
         """$or where no branches reference time field should return SINGLE mode."""
@@ -1157,9 +1157,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Query with no time references in $or should be SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Query with no time references in $or should be SINGLE mode"
+        )
 
     # -------------------------------------------------------------------------
     # Multiple/Conflicting Operators on Time Field
@@ -1186,9 +1186,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         is_chunkable, reason, bounds = is_chunkable_query(query, time_field)
-        assert (
-            is_chunkable
-        ), f"Query with multiple lower bounds should be allowed: {reason}"
+        assert is_chunkable, (
+            f"Query with multiple lower bounds should be allowed: {reason}"
+        )
         assert bounds is not None
         # Should take t2 as lower bound (the actual value from more restrictive $gt)
         # The lo_inclusive flag handles the exclusivity, not microsecond adjustment
@@ -1210,9 +1210,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         is_chunkable, reason, bounds = is_chunkable_query(query, time_field)
-        assert (
-            is_chunkable
-        ), f"Query with multiple upper bounds should be allowed: {reason}"
+        assert is_chunkable, (
+            f"Query with multiple upper bounds should be allowed: {reason}"
+        )
         assert bounds is not None
         # Should take t2 as upper bound (more restrictive $lt)
         assert bounds[1] == t2, f"Expected upper bound {t2}, got {bounds[1]}"
@@ -1231,9 +1231,9 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Query with contradictory bounds (lo > hi) should be SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Query with contradictory bounds (lo > hi) should be SINGLE mode"
+        )
         assert (
             "invalid" in result.reason.lower() or "contradict" in result.reason.lower()
         ), f"Reason should mention invalid/contradictory bounds: {result.reason}"
@@ -1251,9 +1251,9 @@ class TestEdgeCasesDataLossPrevention:
         query = {time_field: {"$gte": t1, "$lt": t2, "$in": []}}
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Query with empty $in array should be SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Query with empty $in array should be SINGLE mode"
+        )
 
     def test_or_with_empty_array(self):
         """$or with empty array should be rejected (matches no documents)."""
@@ -1344,12 +1344,12 @@ class TestEdgeCasesDataLossPrevention:
 
         # $ne on time field returns SINGLE mode
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "$ne on time field should be SINGLE mode"
-        assert (
-            "negation" in result.reason.lower() or "$ne" in result.reason
-        ), f"Reason should mention negation: {result.reason}"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "$ne on time field should be SINGLE mode"
+        )
+        assert "negation" in result.reason.lower() or "$ne" in result.reason, (
+            f"Reason should mention negation: {result.reason}"
+        )
 
     def test_nin_on_time_field(self):
         """$nin on time field should return SINGLE mode (can't safely bound
@@ -1368,12 +1368,12 @@ class TestEdgeCasesDataLossPrevention:
         }
 
         result = is_chunkable_query(query, time_field)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "$nin on time field should be SINGLE mode"
-        assert (
-            "negation" in result.reason.lower() or "$nin" in result.reason
-        ), f"Reason should mention negation: {result.reason}"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "$nin on time field should be SINGLE mode"
+        )
+        assert "negation" in result.reason.lower() or "$nin" in result.reason, (
+            f"Reason should mention negation: {result.reason}"
+        )
 
     def test_not_on_time_field(self):
         """$not on time field should be rejected."""
@@ -1384,9 +1384,9 @@ class TestEdgeCasesDataLossPrevention:
 
         valid, reason = validate_query_for_chunking(query, time_field)
         assert not valid, "$not on time field should be rejected"
-        assert (
-            "$not" in reason or "negation" in reason.lower()
-        ), f"Reason should mention $not: {reason}"
+        assert "$not" in reason or "negation" in reason.lower(), (
+            f"Reason should mention $not: {reason}"
+        )
 
     # -------------------------------------------------------------------------
     # Complex Real-World Scenarios
@@ -1412,9 +1412,9 @@ class TestEdgeCasesDataLossPrevention:
 
         result = is_chunkable_query(query, time_field)
         # Changed to expect SINGLE mode (valid but not parallelizable)
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Complex $or with mixed bound types should return SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Complex $or with mixed bound types should return SINGLE mode"
+        )
 
     def test_nested_and_or_with_partial_bounds(self):
         """Nested $and/$or where some paths have partial time bounds."""
@@ -1436,9 +1436,9 @@ class TestEdgeCasesDataLossPrevention:
 
         result = is_chunkable_query(query, time_field)
         # Changed to expect SINGLE mode (not REJECT) for unbounded $or
-        assert (
-            result.mode == ChunkabilityMode.SINGLE
-        ), "Nested query with unbounded $or branch should return SINGLE mode"
+        assert result.mode == ChunkabilityMode.SINGLE, (
+            "Nested query with unbounded $or branch should return SINGLE mode"
+        )
 
 
 # =============================================================================

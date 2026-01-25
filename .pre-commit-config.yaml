@@ -1,11 +1,19 @@
 repos:
-  # Ruff - Fast Python linter and formatter
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.4
+  # Ruff - Fast Python linter and formatter (using system ruff from uv)
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
+        name: ruff
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
       - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types: [python]
+        require_serial: true
 
   # nbstripout - Strip notebook outputs
   - repo: https://github.com/kynan/nbstripout
@@ -22,12 +30,12 @@ repos:
         language: system
         pass_filenames: false
 
-  # # pytest - Run tests before commit
-  # - repo: local
-  #   hooks:
-  #     - id: pytest
-  #       name: pytest
-  #       entry: uv run pytest
-  #       language: system
-  #       pass_filenames: false
-  #       always_run: true
+  # pytest - Run tests before commit
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        pass_filenames: false
+        always_run: true

@@ -209,13 +209,13 @@ class TestValueEncoderRoundTrip:
         original_values = [d["value"] for d in docs]
         for i, (original, decoded) in enumerate(zip(original_values, decoded_values)):
             if isinstance(original, float):
-                assert decoded == pytest.approx(
-                    original
-                ), f"Row {i}: {original} != {decoded}"
+                assert decoded == pytest.approx(original), (
+                    f"Row {i}: {original} != {decoded}"
+                )
             elif isinstance(original, ObjectId):
-                assert str(decoded) == str(
-                    original
-                ), f"Row {i}: {original} != {decoded}"
+                assert str(decoded) == str(original), (
+                    f"Row {i}: {original} != {decoded}"
+                )
             elif original is None:
                 assert decoded is None, f"Row {i}: expected None, got {decoded}"
             else:
@@ -245,9 +245,9 @@ class TestValueEncoderRoundTrip:
 
             # Verify
             if isinstance(value, float):
-                assert decoded == pytest.approx(
-                    value
-                ), f"Failed on {description}: {value}"
+                assert decoded == pytest.approx(value), (
+                    f"Failed on {description}: {value}"
+                )
             elif isinstance(value, ObjectId):
                 assert str(decoded) == str(value), f"Failed on {description}: {value}"
             else:

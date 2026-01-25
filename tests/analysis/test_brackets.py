@@ -126,8 +126,6 @@ PARALLEL MODE (multiple brackets):
   - No nested $or
   - $or branches are disjoint (no overlap in matched documents)
 
-  Performance: Best (2-5x speedup)
-
 SINGLE MODE (one bracket):
   Query cannot be split into multiple brackets due to overlap risk, but can
   still be time-chunked as a single unit.
@@ -275,9 +273,9 @@ class TestRejectionNeverAllowedOperators:
         assert ok is True, f"{operator} should be executable in SINGLE mode"
         assert operator in reason, f"Reason should mention {operator}"
         assert "full dataset" in reason.lower() or "single-worker" in reason.lower()
-        assert (
-            brackets == []
-        ), f"{operator} should return empty brackets (single-worker)"
+        assert brackets == [], (
+            f"{operator} should return empty brackets (single-worker)"
+        )
         assert bounds == (
             t1,
             t2,
@@ -443,9 +441,9 @@ class TestSingleBracketOverlapProneOperators:
         ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
         assert ok is True, f"Query with {desc} should succeed"
         # Could be single-bracket OR merged-branches (both result in 1 bracket)
-        assert (
-            "single-bracket" in reason or "merged-branches" in reason
-        ), f"{desc} should trigger unsafe path"
+        assert "single-bracket" in reason or "merged-branches" in reason, (
+            f"{desc} should trigger unsafe path"
+        )
         assert len(brackets) == 1
 
     def test_comparison_on_time_field_allowed(self, time_field, t1, t2):

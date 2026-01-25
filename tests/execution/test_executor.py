@@ -194,9 +194,9 @@ class TestBoundaryOperatorChunkConstruction:
         bracket = brackets[0]
 
         # Key assertion: hi_inclusive should be True for $lte
-        assert (
-            bracket.timerange.hi_inclusive is True
-        ), "Bracket should preserve $lte as hi_inclusive=True"
+        assert bracket.timerange.hi_inclusive is True, (
+            "Bracket should preserve $lte as hi_inclusive=True"
+        )
 
         # Simulate chunk creation for last chunk
         chunks = chunk_time_range(start=t1, end=t2, chunk_size=timedelta(days=3))
@@ -219,12 +219,12 @@ class TestBoundaryOperatorChunkConstruction:
             time_clause["$lt"] = last_chunk_end
 
         # CRITICAL: Last chunk filter should have $lte, not $lt
-        assert (
-            "$lte" in time_clause
-        ), "Last chunk filter should use $lte when query uses $lte"
-        assert (
-            "$lt" not in time_clause
-        ), "Last chunk filter should NOT use $lt when query uses $lte"
+        assert "$lte" in time_clause, (
+            "Last chunk filter should use $lte when query uses $lte"
+        )
+        assert "$lt" not in time_clause, (
+            "Last chunk filter should NOT use $lt when query uses $lte"
+        )
         assert time_clause["$lte"] == t2
 
     def test_lt_preserved_when_query_uses_lt(self):
@@ -244,9 +244,9 @@ class TestBoundaryOperatorChunkConstruction:
         bracket = brackets[0]
 
         # hi_inclusive should be False for $lt
-        assert (
-            bracket.timerange.hi_inclusive is False
-        ), "Bracket should preserve $lt as hi_inclusive=False"
+        assert bracket.timerange.hi_inclusive is False, (
+            "Bracket should preserve $lt as hi_inclusive=False"
+        )
 
         chunks = chunk_time_range(start=t1, end=t2, chunk_size=timedelta(days=3))
         last_chunk_start, last_chunk_end = chunks[-1]
@@ -261,9 +261,9 @@ class TestBoundaryOperatorChunkConstruction:
             time_clause["$lt"] = last_chunk_end
 
         # Last chunk filter should have $lt (exclusive)
-        assert (
-            "$lt" in time_clause
-        ), "Last chunk filter should use $lt when query uses $lt"
+        assert "$lt" in time_clause, (
+            "Last chunk filter should use $lt when query uses $lt"
+        )
         assert "$lte" not in time_clause
         assert time_clause["$lt"] == t2
 
@@ -285,9 +285,9 @@ class TestBoundaryOperatorChunkConstruction:
         bracket = brackets[0]
 
         # lo_inclusive should be False for $gt
-        assert (
-            bracket.timerange.lo_inclusive is False
-        ), "Bracket should preserve $gt as lo_inclusive=False"
+        assert bracket.timerange.lo_inclusive is False, (
+            "Bracket should preserve $gt as lo_inclusive=False"
+        )
 
         # Simulate unchunked bracket filter construction (like executor does)
         time_clause = {}
@@ -318,9 +318,9 @@ class TestBoundaryOperatorChunkConstruction:
         bracket = brackets[0]
 
         # lo_inclusive should be True for $gte
-        assert (
-            bracket.timerange.lo_inclusive is True
-        ), "Bracket should preserve $gte as lo_inclusive=True"
+        assert bracket.timerange.lo_inclusive is True, (
+            "Bracket should preserve $gte as lo_inclusive=True"
+        )
 
     def test_intermediate_chunks_always_use_gte_lt(self):
         """
