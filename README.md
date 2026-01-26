@@ -274,7 +274,6 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 
 - **PyMongo baseline**: Stream cursor → build DataFrames in 300k-row batches → `pd.concat()`
 - **XLR8**: `cursor.to_dataframe(max_workers=14, chunking_granularity=4 days, cache_read=False)`
-- Memory delta = peak memory − starting memory (isolates the query's memory footprint)
 - Each test runs sequentially to avoid database contention
 
 ### Results
