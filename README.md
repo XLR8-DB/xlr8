@@ -14,6 +14,7 @@
   <a href="https://pypi.org/project/xlr8/"><img src="https://img.shields.io/pypi/v/xlr8.svg" alt="PyPI version"/></a>
     <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11%2B-blue.svg" alt="Python versions"/></a>
     <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License"/></a>
+    <a href="#performance-benchmarks"><img src="https://img.shields.io/badge/performance-3.8x%20faster-c1ff72.svg" alt="Performance"/></a>
 </p>
 
 <p align="center">
@@ -73,15 +74,14 @@ flowchart LR
     subgraph Solution["XLR8: Rust Backend (GIL-Free) + Tokio Async + Cache-First"]
         direction LR
 
-        Q["Your Query<br/>cursor.to_dataframe(...)"] --> GIL["Python releases GIL<br/>(py.allow_threads)"]
+        Q["Your Query<br/>cursor.to_dataframe(...)"] --> PLAN["Execution plan<br/>chunking + worker count + RAM budget"]
+        PLAN --> GIL["Python releases GIL<br/>(py.allow_threads)"]
         GIL --> RT["Rust Backend<br/>Tokio async runtime"]
 
-        RT --> PLAN["Execution plan<br/>chunking + worker count + RAM budget"]
-
-        PLAN --> W1["Worker 1<br/>async fetch + BSON→Arrow"]
-        PLAN --> W2["Worker 2<br/>async fetch + BSON→Arrow"]
-        PLAN --> W3["Worker 3<br/>async fetch + BSON→Arrow"]
-        PLAN --> WN["Worker N<br/>async fetch + BSON→Arrow"]
+        RT --> W1["Worker 1<br/>async fetch + BSON→Arrow"]
+        RT --> W2["Worker 2<br/>async fetch + BSON→Arrow"]
+        RT --> W3["Worker 3<br/>async fetch + BSON→Arrow"]
+        RT --> WN["Worker N<br/>async fetch + BSON→Arrow"]
 
         W1 --> M1{"RAM limit reached?<br/>flush_ram_limit_mb"}
         W2 --> M2{"RAM limit reached?<br/>flush_ram_limit_mb"}
@@ -257,6 +257,53 @@ flowchart TB
 
 ---
 
+## Performance Benchmarks
+
+Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a production-like workload.
+
+### Test Environment
+
+| Component | Specification |
+|-----------|---------------|
+| **MongoDB** | Atlas M30 (General), GCP europe-west2 (London) |
+| **Compute** | GCP Cloud Run Jobs, 8 vCPU / 32 GB RAM, europe-west2 |
+| **Dataset** | Forex candlestick data, 27 currency pairs, ~54K docs/day |
+| **Query** | Time-range filter + `$in` on 27 instruments |
+
+### Methodology
+
+- **PyMongo baseline**: Stream cursor → build DataFrames in 300k-row batches → `pd.concat()`
+- **XLR8**: `cursor.to_dataframe(max_workers=14, chunking_granularity=4 days, cache_read=False)`
+- Each test runs sequentially to avoid database contention
+
+### Results
+
+| Period | Rows | PyMongo Time | XLR8 Time | **Speedup** |
+|--------|-----:|-------------:|----------:|:-----------:|
+| 3 months | 4.8M | 89.5s | 31.1s | **2.9x** |
+| 6 months | 9.8M | 177.4s | 54.1s | **3.3x** |
+| 1 year | 19.7M | 371.2s | 109.3s | **3.4x** |
+| 1.5 years | 29.8M | 555.5s | 157.4s | **3.5x** |
+| 2 years | 39.7M | 760.7s | 204.0s | **3.7x** |
+| 2.5 years | 49.7M | 949.5s | 252.6s | **3.8x** |
+
+### Visualization
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/XLR8-DB/xlr8/main/.github/benchmark_results.png" alt="XLR8 Benchmark Results" width="900"/>
+</p>
+
+### Key Takeaways
+
+- **Consistent 3-4x speedup** across all data sizes
+- **Throughput**: XLR8 sustains ~180-195K rows/sec vs PyMongo's ~52-55K rows/sec
+- **Scales linearly**: Speedup improves slightly with larger datasets as parallelism amortizes overhead
+- **Memory bounded**: Barring the part which creates the dataframe, the planner ensures each worker flushes data to cache before memory limit is breached. Use start and end arguments or to_dataframe_batches() to completley control memory usage and avoid OOM errors.
+
+> 💡 With caching enabled, subsequent queries on the same data complete in seconds (cache hit), making repeated analytics virtually free.
+
+---
+
 ## When to Use XLR8
 
 | Use Case | XLR8 Fit | Why |
@@ -325,51 +372,6 @@ cursor.stream_to_callback(
 <details>
 <summary><strong>Click to expand the full pipeline</strong></summary>
 
-### The 8-Step Pipeline
-
-```mermaid
-flowchart LR
-    A["1. PyMongo find()"] --> B["2. Cache check"]
-    B --> C["3. Bracket splitting"]
-    C --> D["4. Time chunking"]
-    D --> E["5. Execution planning"]
-    E --> F["6. GIL release"]
-    F --> G["7. Rust parallel execution"]
-    G --> H["8. DataFrame assembly"]
-```
-
-### Step-by-Step Breakdown
-
-```mermaid
-flowchart TB
-    subgraph Step1["1️⃣ Your Query"]
-        Q["cursor.to_dataframe(chunking_granularity=7d, max_workers=8)"]
-    end
-    
-    subgraph Step2["2️⃣ Cache Check"]
-        Q --> Hash["Query hash → .cache/abc123/"]
-        Hash --> CacheHit{"Cache hit?"}
-        CacheHit -->|Yes| Skip["Skip to step 8"]
-        CacheHit -->|No| Continue["Continue to fetch"]
-    end
-    
-    subgraph Step3["3️⃣ Bracket Analysis"]
-        Continue --> Brackets["$or queries → independent brackets"]
-        Brackets --> InExpand["$in → expanded to parallel units"]
-    end
-    
-    subgraph Step4["4️⃣ Time Chunking"]
-        InExpand --> TimeChunk["6-month range ÷ 7-day granularity = 26 chunks"]
-    end
-    
-    subgraph Step5["5️⃣ Execution Planning"]
-        TimeChunk --> Plan["RAM budget + workers → batch sizes"]
-    end
-    
-    subgraph Step6["6️⃣ GIL Release"]
-        Plan --> GIL["py.allow_threads() → Rust takes over"]
-    end
-```
 
 ### Parallel Execution in Rust
 

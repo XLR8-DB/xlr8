@@ -71,3 +71,6 @@ rust/**/Cargo.lock
 # Cache
 .cache/
 cache/
+
+# Performance tests (internal benchmarking)
+perf_test/
