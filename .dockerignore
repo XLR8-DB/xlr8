@@ -1,0 +1,54 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Rust build artifacts (large!)
+rust/*/target/
+rust/target/
+
+# IDE
+.vscode/
+.idea/
+
+# Cache
+.cache/
+
+# Misc
+*.log
+.DS_Store
+Thumbs.db
+
+# Documentation
+docs/
+
+# Tests (not needed in benchmark image)
+# tests/
+
+# Scripts
+scripts/
+
+# Performance tests (internal benchmarking)
+perf_test/
