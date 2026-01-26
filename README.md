@@ -298,6 +298,7 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 - **Consistent 3-4x speedup** across all data sizes
 - **Throughput**: XLR8 sustains ~180-195K rows/sec vs PyMongo's ~52-55K rows/sec
 - **Scales linearly**: Speedup improves slightly with larger datasets as parallelism amortizes overhead
+- **Memory bounded**: Barring the part which creates the dataframe, the planner ensures each worker flushes data to cache before memory limit is breached. Use start and end arguments or to_dataframe_batches() to completley control memory usage and avoid OOM errors.
 
 > 💡 With caching enabled, subsequent queries on the same data complete in seconds (cache hit), making repeated analytics virtually free.
 
