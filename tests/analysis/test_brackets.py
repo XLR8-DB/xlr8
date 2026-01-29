@@ -403,6 +403,190 @@ class TestSingleBracketNegationOperators:
         assert len(brackets) == 1
 
 
+class TestNestedOrInsideNegationOperators:
+    """Test complex queries with $or nested inside negation operators.
+
+    When $or is nested inside $nor, $not, or combined with $nin/$ne,
+    the entire structure should be preserved as a single bracket.
+    XLR8 only splits TOP-LEVEL $or into brackets. Nested $or stays intact.
+
+    These tests verify that complex nested structures with overlapping
+    $in values are handled correctly - the whole thing becomes one bracket
+    and MongoDB handles the logic.
+    """
+
+    def test_or_inside_nor_with_overlapping_in(self, time_field, t1, t2):
+        """$or inside $nor with overlapping $in = single bracket."""
+        query = {
+            "$nor": [
+                {
+                    "$or": [
+                        {"field": {"$in": [1, 2, 3]}},
+                        {"field": {"$in": [3, 4, 5]}},  # Overlap on 3
+                    ]
+                }
+            ],
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1, "Nested $or inside $nor should produce 1 bracket"
+
+        # Verify the $nor structure is preserved intact
+        static_filter = brackets[0].static_filter
+        assert "$nor" in static_filter
+        assert "$or" in static_filter["$nor"][0]
+
+    def test_or_inside_nor_multiple_branches(self, time_field, t1, t2):
+        """$nor with multiple $or branches = single bracket."""
+        query = {
+            "$nor": [
+                {"$or": [{"a": 1}, {"a": 2}]},
+                {"$or": [{"b": 3}, {"b": 4}]},
+            ],
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1
+        assert "$nor" in brackets[0].static_filter
+
+    def test_not_wrapping_or_with_overlapping_in(self, time_field, t1, t2):
+        """$not wrapping complex condition = single bracket."""
+        query = {
+            "status": {
+                "$not": {
+                    "$in": ["deleted", "archived", "pending"],
+                }
+            },
+            "category": {"$in": ["A", "B", "C"]},
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1
+
+        # Verify $not and $in are preserved
+        static_filter = brackets[0].static_filter
+        assert "$not" in static_filter.get("status", {})
+        assert "$in" in static_filter.get("category", {})
+
+    def test_nin_with_or_at_top_level(self, time_field, t1, t2):
+        """Top-level $or with $nin in branches = single bracket (negation detected)."""
+        query = {
+            "$or": [
+                {
+                    "region": {"$nin": [1, 2, 3]},
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+                {
+                    "region": {"$nin": [3, 4, 5]},  # Overlapping exclusion
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        # Should be single bracket due to negation operator
+        assert len(brackets) == 1
+
+    def test_complex_nested_nor_and_or(self, time_field, t1, t2):
+        """Complex: $nor containing $or with $in, plus top-level filters."""
+        oid1, oid2 = ObjectId(), ObjectId()
+        query = {
+            "account_id": oid1,
+            "$nor": [
+                {
+                    "$or": [
+                        {"status": {"$in": ["deleted", "archived"]}},
+                        {"priority": {"$in": ["low", "none"]}},
+                    ]
+                }
+            ],
+            "device_type": {"$in": ["sensor", "actuator"]},
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1
+
+        # Verify structure preserved
+        static_filter = brackets[0].static_filter
+        assert static_filter["account_id"] == oid1
+        assert "$nor" in static_filter
+        assert "$in" in static_filter.get("device_type", {})
+
+    def test_ne_combined_with_in_no_or(self, time_field, t1, t2):
+        """$ne and $in without $or = single bracket with both preserved."""
+        query = {
+            "status": {"$ne": "deleted"},
+            "category": {"$in": ["A", "B", "C"]},
+            "region": {"$in": [1, 2, 3]},
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1
+
+        static_filter = brackets[0].static_filter
+        assert "$ne" in static_filter.get("status", {})
+        assert "$in" in static_filter.get("category", {})
+        assert "$in" in static_filter.get("region", {})
+
+    def test_deeply_nested_or_in_and_in_nor(self, time_field, t1, t2):
+        """Deeply nested: $nor -> $and -> $or with $in = single bracket."""
+        query = {
+            "$nor": [
+                {
+                    "$and": [
+                        {"active": True},
+                        {
+                            "$or": [
+                                {"tag": {"$in": ["spam", "junk"]}},
+                                {"score": {"$in": [0, 1, 2]}},
+                            ]
+                        },
+                    ]
+                }
+            ],
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1
+
+        # Verify entire structure preserved
+        static_filter = brackets[0].static_filter
+        assert "$nor" in static_filter
+
+    def test_multiple_negation_operators_combined(self, time_field, t1, t2):
+        """Multiple negation operators ($ne, $nin, $nor) combined = single bracket."""
+        query = {
+            "status": {"$ne": "deleted"},
+            "priority": {"$nin": ["spam", "junk"]},
+            "$nor": [{"flagged": True}],
+            "tags": {"$in": ["important", "urgent"]},
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1
+
+        static_filter = brackets[0].static_filter
+        assert "$ne" in static_filter.get("status", {})
+        assert "$nin" in static_filter.get("priority", {})
+        assert "$nor" in static_filter
+        assert "$in" in static_filter.get("tags", {})
+
+
 class TestSingleBracketOverlapProneOperators:
     """Test that OVERLAP_PRONE_OPERATORS in $or branches force single-bracket.
 
@@ -807,6 +991,60 @@ class TestMultipleBracketsCreation:
         assert ok is True
         assert len(brackets) == 1
         assert brackets[0].timerange.is_full is True
+
+    def test_standalone_in_not_expanded(self, time_field, t1, t2):
+        """$in without $or stays as single bracket - NOT expanded.
+
+        This is a critical test verifying that standalone $in queries are
+        NOT split into separate brackets per value. The $in stays intact
+        within a single bracket, and MongoDB handles it efficiently with
+        index scans. Parallelism comes from time chunking, not $in expansion.
+
+        Example:
+            {"sensor_id": {"$in": [A, B, C]}, "ts": {"$gte": t1, "$lt": t2}}
+
+        Should produce 1 bracket with the full $in, NOT 3 brackets.
+        """
+        sensor_ids = [ObjectId() for _ in range(5)]
+        query = {
+            "sensor_id": {"$in": sensor_ids},
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1, (
+            f"Expected 1 bracket with $in intact, got {len(brackets)}. "
+            "$in should NOT be expanded into separate brackets."
+        )
+
+        # Verify the $in is preserved in the static filter
+        static_filter = brackets[0].static_filter
+        assert "sensor_id" in static_filter
+        assert "$in" in static_filter["sensor_id"]
+        assert set(static_filter["sensor_id"]["$in"]) == set(sensor_ids)
+
+    def test_standalone_in_with_multiple_fields_not_expanded(self, time_field, t1, t2):
+        """Multiple $in fields without $or = single bracket with both $in intact."""
+        region_ids = [ObjectId() for _ in range(3)]
+        device_types = ["sensor", "actuator", "gateway"]
+        query = {
+            "region_id": {"$in": region_ids},
+            "device_type": {"$in": device_types},
+            time_field: {"$gte": t1, "$lt": t2},
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+
+        assert ok is True
+        assert len(brackets) == 1, (
+            "Multiple $in fields should NOT create multiple brackets. "
+            f"Got {len(brackets)} brackets instead of 1."
+        )
+
+        # Verify both $in operators are preserved
+        static_filter = brackets[0].static_filter
+        assert "$in" in static_filter.get("region_id", {})
+        assert "$in" in static_filter.get("device_type", {})
 
 
 # =============================================================================
