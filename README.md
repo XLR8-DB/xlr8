@@ -3,9 +3,11 @@
 </p>
 
 <p align="center">
-  <strong>Accelerate MongoDB analytical queries with parallel execution and Parquet caching</strong>
+  <strong>Accelerate MongoDB analytical queries with parallel execution and Parquet caching.</strong>
 </p>
-
+<p align="center">
+  <strong>Suitable for timeseries data.</strong>
+</p>
 <p align="center">
   <em>Faster Queries → Less Memory → Real Savings</em>
 </p>
@@ -28,7 +30,6 @@
 ```python
 # Before: PyMongo
 df = pd.DataFrame(list(collection.find(query)))
-
 
 # After: XLR8 - just wrap and go!
 xlr8_collection = accelerate(collection, schema, mongodb_uri)
@@ -104,7 +105,7 @@ flowchart LR
 
 XLR8 releases Python's GIL and hands execution to a Rust backend powered by Tokio's async runtime. Multiple workers fetch from MongoDB in parallel, convert BSON to Arrow, and write Parquet shards-all without touching the GIL.
 
-The result? Your analytical queries run **significantly faster**, especially for large result sets.
+The result? Your analytical queries run **upto 4x faster**, especially for large result sets.
 
 ---
 
@@ -186,10 +187,10 @@ Data is stored in the query-hash folder, cursors can be supplied a start and end
 </td>
 <td width="50%" valign="top">
 
-`$or` and `$in` queries are automatically split into **independent “brackets”** that can be executed in parallel.
+`$or` queries are automatically split into **independent "brackets"** that can be executed in parallel.
 
 - **`$or`**: each branch becomes its own bracket (while shared filters are kept as global constraints).
-- **`$in`**: the list is expanded into one bracket per value (e.g., 3 values → 3 parallel brackets).
+- **`$in`**: stays intact within each bracket - MongoDB handles it efficiently with index scans.
 
 Before execution, XLR8 builds an **execution plan** that detects **overlapping brackets** (cases where multiple brackets could match the same document) and ensures results are **correct and deterministic**. This behavior is covered by extensive tests to prevent duplicates or missing rows. 
 </td>
@@ -297,10 +298,10 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 
 - **Consistent 3-4x speedup** across all data sizes
 - **Throughput**: XLR8 sustains ~180-195K rows/sec vs PyMongo's ~52-55K rows/sec
-- **Scales linearly**: Speedup improves slightly with larger datasets as parallelism amortizes overhead
+- **Scales linearly**: Speedup improves with larger datasets as parallelism amortizes overhead
 - **Memory bounded**: Barring the part which creates the dataframe, the planner ensures each worker flushes data to cache before memory limit is breached. Use start and end arguments or to_dataframe_batches() to completley control memory usage and avoid OOM errors.
 
-> 💡 With caching enabled, subsequent queries on the same data complete in seconds (cache hit), making repeated analytics virtually free.
+> 💡 With caching, subsequent queries on the same data complete in seconds (cache hit), making repeated analytics bypass network trips.
 
 ---
 
@@ -311,11 +312,10 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 | Analytics on 100K+ documents | ✅ **Great** | Parallel fetch + caching provides meaningful speedup |
 | Repeated queries on same data | ✅ **Great** | Cache hit avoids network entirely |
 | Time-series IoT/sensor data | ✅ **Great** | Time-based chunking is native to the design |
-| Multi-device `$or`/`$in` queries | ✅ **Great** | Automatic bracket parallelization |
+| Multi-device `$or` queries | ✅ **Great** | Automatic bracket parallelization |
 | One-off small queries | ➖ Neutral | Works fine, but overhead may not be worth it |
-| Single document lookups | ❌ Skip | PyMongo is already optimal for this |
-| Write-heavy workloads | ❌ Skip | XLR8 accelerates reads, not writes |
-
+| Single document lookups | ❌ Skip | PyMongo is already optimal for this, so xlr8 sends query to pymongo under the hood. |
+| Write-heavy workloads | ❌ Skip | XLR8 accelerates reads, not writes. Operations are sent to pymongo under the hood. |
 ---
 
 ## Four Ways to Get Your Data
@@ -439,17 +439,47 @@ flowchart TB
     end
 ```
 
-`$in` queries are automatically expanded:
 
-```python
-# This query:
-{"sensor_id": {"$in": [id1, id2, id3]}}
 
-# Becomes 3 parallel brackets:
-# Bracket 1: {"sensor_id": id1}
-# Bracket 2: {"sensor_id": id2}
-# Bracket 3: {"sensor_id": id3}
-```
+## XLR8 Bracket Logic
+
+### How Parallelism Works
+
+**XLR8 parallelizes queries in TWO ways:**
+
+1. **Time Chunking** (primary) - Your time range is split into smaller chunks that run in parallel
+2. **`$or` Splitting** (secondary) - Top-level `$or` branches become separate work units
+
+### The Simple Rule
+
+| Query Pattern | Brackets | How Parallelism Works |
+|---------------|----------|----------------------|
+| No `$or`, just filters + time range | **1 bracket** | Time chunking only |
+| `$in` without `$or` | **1 bracket** | Time chunking only (MongoDB handles `$in` efficiently) |
+| Top-level `$or` with disjoint branches | **N brackets** | Each branch × time chunks |
+| `$or` with negation (`$nin`, `$ne`, `$not`, `$nor`) | **1 bracket** | Time chunking only (overlap risk) |
+| `$or` nested inside `$nor`, `$and`, etc. | **1 bracket** | Time chunking only (nested = not split) |
+| `$expr`, `$text`, `$near`, geospatial | **0 brackets** | Single-worker fallback |
+
+### Collections Where XLR8 Shines
+
+XLR8 is designed for **time-series analytical workloads**. It's most useful when:
+
+**Your collection has:**
+- ✅ A **time field** (timestamp, createdAt, recordedAt, etc.)
+- ✅ **Large result sets** (100K+ documents per query)
+- ✅ **Read-heavy** analytical queries
+- ✅ Documents that are **naturally ordered by time**
+
+**Ideal use cases:**
+
+| Domain | Example Collections |
+|--------|---------------------|
+| **IoT / Sensors** | `sensor_readings`, `telemetry`, `device_logs` |
+| **Finance** | `candlesticks`, `trades`, `tick_data`, `transactions` |
+| **Observability** | `logs`, `metrics`, `events`, `traces` |
+| **Analytics** | `page_views`, `user_events`, `sessions` |
+| **Time-series** | Any collection with timestamp fields which can be used for chunking |
 
 </details>
 
@@ -601,9 +631,20 @@ cursor = xlr8_col.find(
 
 ## Contributing
 
+Contributions welcome! ❤️ Please follow these guidelines:
+
+**Setup**
 ```bash
 git clone https://github.com/XLR8-DB/xlr8.git
 cd xlr8
 uv sync
 uv run pytest
 ```
+
+**Guidelines**
+- Use [conventional commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `docs:`, `test:`, `refactor:`
+- Run `uv run pytest` before submitting - all tests must pass
+- Keep PRs focused - one feature or fix per PR
+- Add tests for new functionality
+
+**Questions?** Open an issue or start a discussion.
