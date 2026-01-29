@@ -372,22 +372,6 @@ cursor.stream_to_callback(
 <details>
 <summary><strong>Click to expand the full pipeline</strong></summary>
 
-
-### Parallel Execution in Rust
-
-```mermaid
-flowchart LR
-    RT["Tokio Runtime"] --> W1["Worker 1"]
-    RT --> W2["Worker 2"]
-    RT --> WN["Worker N"]
-    
-    W1 --> P1["Parquet shard"]
-    W2 --> P2["Parquet shard"]
-    WN --> PN["Parquet shard"]
-```
-
-Each worker: **MongoDB Fetch → BSON→Arrow → Write Parquet** (all GIL-free)
-
 ### DataFrame Assembly
 
 ```mermaid
