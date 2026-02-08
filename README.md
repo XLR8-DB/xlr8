@@ -29,7 +29,7 @@
 
 ```python
 # Before: PyMongo
-df = pd.DataFrame(list(collection.find(query)))
+df = pd.DataFrame(collection.find(query))
 
 # After: XLR8 - just wrap and go!
 xlr8_collection = accelerate(collection, schema, mongodb_uri)
