@@ -62,7 +62,7 @@ The build_brackets_for_find() function performs 5 steps:
       Force single-bracket mode. Negations can match the same document across
       multiple branches.
       Example: $or: [{"status": "active"}, {"status": {"$ne": "deleted"}}]
-               Document {"status": "pending"} matches BOTH branches!
+               Document {"status": "active"} matches BOTH branches!
 
    b) OVERLAP-PRONE OPERATORS
       Force single-bracket mode for: $all, $elemMatch, $regex, $mod,
