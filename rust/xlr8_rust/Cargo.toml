@@ -1,6 +1,6 @@
 [package]
 name = "xlr8_rust"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2021"
 description = "Rust backend for XLR8 - high-performance MongoDB acceleration"
 license = "Apache-2.0"
@@ -26,6 +26,7 @@ base64 = "0.22"
 # Full Rust MongoDB client
 mongodb = { version = "3" }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio-util = "0.7"
 futures = "0.3"
 rayon = "1.8"
 flume = "0.12.0"
