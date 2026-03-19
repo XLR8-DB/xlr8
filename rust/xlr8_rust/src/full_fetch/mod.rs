@@ -26,6 +26,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 // ============================================================================
 // BSON-BASED CHUNK PARSING (Phase 1 Integration)
@@ -173,6 +174,7 @@ pub fn fetch_chunks_bson(
                             chunks_per_worker[idx % num_workers].push(chunk);
                         }
                         
+                        let cancel_token = CancellationToken::new();
                         let mut handles = Vec::with_capacity(num_workers);
                         
                         for (_worker_id, my_chunks) in chunks_per_worker.into_iter().enumerate() {
@@ -188,6 +190,7 @@ pub fn fetch_chunks_bson(
                             let row_group_size = Arc::clone(&row_group_size);
                             let projection_cloned = projection.clone();
                             let _chunk_count = my_chunks.len();
+                            let worker_cancel = cancel_token.clone();
                             
                             let handle = tokio::spawn(async move {
                                 let _worker_start = std::time::Instant::now();
@@ -202,6 +205,12 @@ pub fn fetch_chunks_bson(
                                 
                                 // Process ALL my pre-assigned chunks
                                 for bson_chunk in my_chunks {
+                                    // Check if another worker has failed
+                                    if worker_cancel.is_cancelled() {
+                                        return Err(PyValueError::new_err(
+                                            "cancelled: another worker failed".to_string()
+                                        ));
+                                    }
                                     // Build find options with conditional projection
                                     let find_options = if let Some(ref proj) = projection_cloned {
                                         mongodb::options::FindOptions::builder()
@@ -216,14 +225,25 @@ pub fn fetch_chunks_bson(
                                     
                                     let mut cursor = match collection.find(bson_chunk.filter).with_options(find_options).await {
                                         Ok(c) => c,
-                                        Err(_) => continue,
+                                        Err(e) => return Err(PyValueError::new_err(
+                                            format!("chunk {}: find() failed: {e}", bson_chunk.chunk_idx)
+                                        )),
                                     };
                                     
                                     use futures::stream::StreamExt;
                                     while let Some(result) = cursor.next().await {
+                                        // Check cancellation between documents
+                                        if worker_cancel.is_cancelled() {
+                                            return Err(PyValueError::new_err(
+                                                "cancelled: another worker failed".to_string()
+                                            ));
+                                        }
+                                        
                                         let doc = match result {
                                             Ok(d) => d,
-                                            Err(_) => continue,
+                                            Err(e) => return Err(PyValueError::new_err(
+                                                format!("chunk {}: cursor error: {e}", bson_chunk.chunk_idx)
+                                            )),
                                         };
                                         
                                         buffer.add(doc);
@@ -315,9 +335,10 @@ pub fn fetch_chunks_bson(
                             handles.push(handle);
                         }
                         
-                        // Await all workers
+                        // Await all workers - cancel remaining on first real error
                         let mut total_docs = 0;
                         let mut total_files = 0;
+                        let mut worker_errors: Vec<String> = Vec::new();
                         
                         for handle in handles {
                             match handle.await {
@@ -325,8 +346,32 @@ pub fn fetch_chunks_bson(
                                     total_docs += docs;
                                     total_files += files;
                                 }
-                                _ => {}
+                                Ok(Err(e)) => {
+                                    let msg = format!("{e}");
+                                    // Only signal cancellation for real errors, not cancellation echoes
+                                    if !msg.contains("cancelled: another worker failed") {
+                                        cancel_token.cancel();
+                                        worker_errors.push(msg);
+                                    }
+                                }
+                                Err(e) => {
+                                    cancel_token.cancel();
+                                    worker_errors.push(format!("worker panicked: {e}"));
+                                }
                             }
+                        }
+                        
+                        if !worker_errors.is_empty() {
+                            if let Err(cleanup_err) = std::fs::remove_dir_all(cache_dir.as_str()) {
+                                worker_errors.push(format!("cache cleanup failed: {cleanup_err}"));
+                            }
+                            return Err(PyValueError::new_err(
+                                format!(
+                                    "Fetch failed ({} error(s)). Errors:\n{}",
+                                    worker_errors.len(),
+                                    worker_errors.join("\n")
+                                )
+                            ));
                         }
                         
                         let duration_secs = start.elapsed().as_secs_f64();

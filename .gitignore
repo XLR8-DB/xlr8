@@ -74,3 +74,7 @@ cache/
 
 # Performance tests (internal benchmarking)
 perf_test/
+
+
+# development directory
+development/
