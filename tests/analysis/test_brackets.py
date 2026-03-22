@@ -862,6 +862,78 @@ class TestInValueTransformation:
         assert len(brackets) == 1
         assert set(brackets[0].static_filter["region_id"]["$in"]) == {1, 2, 3}
 
+    def test_equality_vs_in_same_time_produces_disjoint_brackets(
+        self, time_field, t1, t2
+    ):
+        """Equality {f:3} overlapping $in:[3,4] same time -> 2 brackets."""
+        query = {
+            "$or": [
+                {"region_id": 3, time_field: {"$gte": t1, "$lt": t2}},
+                {
+                    "region_id": {"$in": [3, 4]},
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        assert ok is True
+        assert len(brackets) == 2
+        filters = [b.static_filter for b in brackets]
+        # One bracket has equality 3, other has $in:[4]
+        eq_filter = next(f for f in filters if not isinstance(f.get("region_id"), dict))
+        in_filter = next(f for f in filters if isinstance(f.get("region_id"), dict))
+        assert eq_filter["region_id"] == 3
+        assert set(in_filter["region_id"]["$in"]) == {4}
+
+    def test_in_overlap_different_status_no_data_loss(self, time_field, t1, t2):
+        """Overlapping $in but disjoint status -> no transformation."""
+        query = {
+            "$or": [
+                {
+                    "region_id": {"$in": [1, 2]},
+                    "status": "active",
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+                {
+                    "region_id": {"$in": [2, 3]},
+                    "status": "inactive",
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        assert ok is True
+        assert len(brackets) == 2
+        # Both brackets preserved with original $in values (no trimming)
+        all_region_vals = []
+        for b in brackets:
+            vals = b.static_filter["region_id"]["$in"]
+            all_region_vals.append(set(vals))
+        assert {1, 2} in all_region_vals
+        assert {2, 3} in all_region_vals
+
+    def test_same_eq_different_status_both_preserved(self, time_field, t1, t2):
+        """Same region equality but different status -> 2 brackets (no data loss)."""
+        query = {
+            "$or": [
+                {
+                    "region_id": 3,
+                    "status": "active",
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+                {
+                    "region_id": 3,
+                    "status": "inactive",
+                    time_field: {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, time_field)
+        assert ok is True
+        assert len(brackets) == 2
+        statuses = {b.static_filter["status"] for b in brackets}
+        assert statuses == {"active", "inactive"}
+
 
 # =============================================================================
 # SECTION 6: TIME RANGE HANDLING TESTS
@@ -1078,7 +1150,10 @@ class TestFindInFields:
     """Unit tests for _find_in_fields."""
 
     def test_single_in(self):
-        assert _find_in_fields({"a": {"$in": [1, 2]}, "b": 5}) == {"a": {1, 2}}
+        assert _find_in_fields({"a": {"$in": [1, 2]}, "b": 5}) == {
+            "a": {1, 2},
+            "b": {5},
+        }
 
     def test_multiple_in(self):
         assert _find_in_fields({"a": {"$in": [1]}, "b": {"$in": [2]}}) == {
@@ -1087,7 +1162,7 @@ class TestFindInFields:
         }
 
     def test_no_in(self):
-        assert _find_in_fields({"a": 5, "b": {"$gt": 10}}) == {}
+        assert _find_in_fields({"a": 5, "b": {"$gt": 10}}) == {"a": {5}}
 
 
 class TestCheckOrBranchSafety:
@@ -1115,6 +1190,64 @@ class TestCheckOrBranchSafety:
         is_safe, reason, transformed = _check_or_branch_safety(branches, {}, "ts")
         assert is_safe is False
         assert "different field set" in reason.lower()
+
+    def test_equality_vs_in_overlap_detected(self):
+        """Equality `{f: 3}` must be treated like `$in:[3]` for overlap check."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        branches = [{"region_id": 3}, {"region_id": {"$in": [3, 4]}}]
+        ts = {"ts": {"$gte": t1, "$lt": t2}}
+        is_safe, reason, transformed = _check_or_branch_safety(branches, ts, "ts")
+        assert is_safe is True
+        assert transformed is not None
+        # Branch 0 keeps equality 3, branch 1 trimmed to $in:[4]
+        assert transformed[0] == {"region_id": 3}
+        assert transformed[1]["region_id"]["$in"] == [4]
+
+    def test_in_then_eq_covered_removed(self):
+        """$in first, equality second -> equality branch removed if covered."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        branches = [{"region_id": {"$in": [3, 4]}}, {"region_id": 3}]
+        ts = {"ts": {"$gte": t1, "$lt": t2}}
+        is_safe, reason, transformed = _check_or_branch_safety(branches, ts, "ts")
+        assert is_safe is True
+        assert transformed is not None
+        # Equality branch fully covered by $in -> removed
+        assert len(transformed) == 1
+        assert transformed[0]["region_id"]["$in"] == [3, 4]
+
+    def test_overlap_refuted_by_disjoint_field(self):
+        """Overlapping region_id but disjoint status -> safe, no transformation."""
+        branches = [
+            {"region_id": 3, "status": "active"},
+            {"region_id": 3, "status": "inactive"},
+        ]
+        is_safe, reason, transformed = _check_or_branch_safety(branches, {}, "ts")
+        assert is_safe is True
+        assert transformed is None  # No transformation needed
+
+    def test_overlap_not_refuted_single_field(self):
+        """Identical equality on single field -> true overlap, duplicate removed."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        branches = [{"region_id": 3}, {"region_id": 3}]
+        ts = {"ts": {"$gte": t1, "$lt": t2}}
+        is_safe, reason, transformed = _check_or_branch_safety(branches, ts, "ts")
+        assert is_safe is True
+        assert transformed is not None
+        assert len(transformed) == 1  # Duplicate removed
+
+    def test_in_overlap_diff_other_field_no_data_loss(self):
+        """$in overlap + different equality on another field -> safe."""
+        branches = [
+            {"region_id": {"$in": [1, 2]}, "status": "active"},
+            {"region_id": {"$in": [2, 3]}, "status": "inactive"},
+        ]
+        is_safe, reason, transformed = _check_or_branch_safety(branches, {}, "ts")
+        assert is_safe is True
+        assert transformed is None  # Disjoint on status -> no transformation
+        # Both branches preserved intact (no data loss)
 
 
 # =============================================================================
@@ -1641,3 +1774,376 @@ class TestTimeRangeBoundaryDefaults:
 
         assert tr.lo_inclusive is False  # $gt
         assert tr.hi_inclusive is True  # $lte
+
+
+# =============================================================================
+# SECTION: Unanalyzable Operator Fallback & $eq Normalization
+# =============================================================================
+
+
+class TestUnanalyzableOperatorGuard:
+    """Verify branches with operators outside the analyzable set ($exists,
+    $type, $size) fall back to a single bracket for correctness."""
+
+    def test_exists_true_vs_false_falls_back(self):
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        query = {
+            "$or": [
+                {
+                    "region_id": 3,
+                    "status": {"$exists": True},
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+                {
+                    "region_id": 3,
+                    "status": {"$exists": False},
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        assert len(brackets) == 1
+        assert "unanalyzable" in reason
+
+    def test_type_falls_back(self):
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        query = {
+            "$or": [
+                {
+                    "region_id": 3,
+                    "val": {"$type": "string"},
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+                {
+                    "region_id": 3,
+                    "val": {"$type": "int"},
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        assert len(brackets) == 1
+        assert "unanalyzable" in reason
+
+    def test_size_falls_back(self):
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        query = {
+            "$or": [
+                {"region_id": 3, "tags": {"$size": 2}, "ts": {"$gte": t1, "$lt": t2}},
+                {"region_id": 3, "tags": {"$size": 5}, "ts": {"$gte": t1, "$lt": t2}},
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        assert len(brackets) == 1
+        assert "unanalyzable" in reason
+
+    def test_mixed_eq_and_exists_falls_back(self):
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        query = {
+            "$or": [
+                {
+                    "region_id": {"$eq": 3},
+                    "extra": {"$exists": True},
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+                {
+                    "region_id": {"$eq": 3},
+                    "extra": {"$exists": False},
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        assert len(brackets) == 1
+        assert "unanalyzable" in reason
+
+    def test_exists_with_disjoint_status_still_falls_back(self):
+        """Even though status is disjoint (true vs false), $exists on
+        region_id is unanalyzable -- guard fires before disjointness check."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        query = {
+            "$or": [
+                {
+                    "region_id": {"$exists": True},
+                    "status": True,
+                    "ts": {"$gte": t1, "$lt": t2},
+                },
+                {"region_id": 3, "status": False, "ts": {"$gte": t1, "$lt": t2}},
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        assert len(brackets) == 1
+        assert "unanalyzable" in reason
+
+
+class TestEqNormalization:
+    """Verify $eq operator is handled identically to bare equality."""
+
+    def test_find_in_fields_handles_eq(self):
+        result = _find_in_fields({"a": {"$eq": 5}, "b": {"$in": [1, 2]}, "c": 10})
+        assert result == {"a": {5}, "b": {1, 2}, "c": {10}}
+
+    def test_eq_vs_in_overlap_transformed(self, time_field, t1, t2):
+        query = {
+            "$or": [
+                {"region_id": {"$eq": 3}, time_field: {"$gte": t1, "$lt": t2}},
+                {"region_id": {"$in": [3, 4]}, time_field: {"$gte": t1, "$lt": t2}},
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, time_field)
+        assert ok is True
+        assert len(brackets) == 2
+
+    def test_eq_vs_eq_same_value_deduplicated(self, time_field, t1, t2):
+        query = {
+            "$or": [
+                {"region_id": {"$eq": 3}, time_field: {"$gte": t1, "$lt": t2}},
+                {"region_id": {"$eq": 3}, time_field: {"$gte": t1, "$lt": t2}},
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, time_field)
+        assert ok is True
+        assert len(brackets) == 1
+
+    def test_eq_vs_eq_diff_value_disjoint(self, time_field, t1, t2):
+        query = {
+            "$or": [
+                {"region_id": {"$eq": 3}, time_field: {"$gte": t1, "$lt": t2}},
+                {"region_id": {"$eq": 4}, time_field: {"$gte": t1, "$lt": t2}},
+            ]
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, time_field)
+        assert ok is True
+        assert len(brackets) == 2
+
+
+# =============================================================================
+# SECTION: Global + Branch Time Field Intersection
+# =============================================================================
+
+
+class TestGlobalBranchTimeIntersection:
+    """Verify that when both global AND conditions and $or branches contain
+    time field constraints, the operators are properly intersected (not lost)."""
+
+    def test_global_upper_bound_preserved_same_filter(self):
+        """Global $lt should be preserved when branch overwrites with $gte only."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
+        t3 = datetime(2024, 4, 1, tzinfo=timezone.utc)
+        t4 = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        query = {
+            "ts": {"$gte": t1, "$lt": t4},
+            "$or": [
+                {"region": "US", "ts": {"$gte": t2, "$lt": t3}},
+                {"region": "US", "ts": {"$gte": t3}},
+            ],
+        }
+        ok, reason, brackets, bounds = build_brackets_for_find(query, "ts")
+        assert ok is True
+        # Should produce a merged bracket with full bounds, not an unbounded one
+        assert len(brackets) == 1
+        assert brackets[0].timerange.is_full is True
+        assert brackets[0].timerange.hi is not None
+        assert brackets[0].timerange.hi <= t4
+
+    def test_global_upper_bound_preserved_diff_filter(self):
+        """Global $lt preserved when branches have different static filters."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 2, 1, tzinfo=timezone.utc)
+        t3 = datetime(2024, 4, 1, tzinfo=timezone.utc)
+        t4 = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        query = {
+            "ts": {"$gte": t1, "$lt": t4},
+            "$or": [
+                {"region": "US", "ts": {"$gte": t2, "$lt": t3}},
+                {"region": "EU", "ts": {"$gte": t3}},
+            ],
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        assert len(brackets) == 2
+        for b in brackets:
+            assert b.timerange.is_full is True
+            assert b.timerange.hi is not None
+            assert b.timerange.hi <= t4
+
+    def test_global_lower_bound_preserved(self):
+        """Global $gte preserved when branch only specifies $lt."""
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t3 = datetime(2024, 4, 1, tzinfo=timezone.utc)
+        t4 = datetime(2024, 7, 1, tzinfo=timezone.utc)
+        query = {
+            "ts": {"$gte": t1, "$lt": t4},
+            "$or": [
+                {"region": "US", "ts": {"$lt": t3}},
+                {"region": "EU", "ts": {"$lt": t4}},
+            ],
+        }
+        ok, reason, brackets, _ = build_brackets_for_find(query, "ts")
+        assert ok is True
+        for b in brackets:
+            assert b.timerange.lo is not None
+            assert b.timerange.lo >= t1
+
+
+# =============================================================================
+# PARTIAL-COVERS-FULL INCLUSIVITY TESTS
+# =============================================================================
+
+
+class TestPartialCoversFullInclusivity:
+    """_partial_covers_full must respect hi_inclusive / lo_inclusive flags.
+
+    Bug scenario: partial=$lt Jan15, full=$lte Jan15 at same boundary.
+    Without inclusivity check, the function says "covered" -- but documents
+    at exactly Jan15 exist only in the full range, not in the partial.
+    Dropping the full range loses those documents.
+    """
+
+    def test_lt_does_not_cover_lte_at_same_hi(self):
+        """Partial $lt T should NOT cover full $lte T."""
+        from xlr8.analysis.brackets import TimeRange, _partial_covers_full
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 1, 15, tzinfo=timezone.utc)
+
+        partial = TimeRange(
+            lo=None, hi=t2, is_full=False, hi_inclusive=False, lo_inclusive=True
+        )
+        full = TimeRange(
+            lo=t1, hi=t2, is_full=True, hi_inclusive=True, lo_inclusive=True
+        )
+        assert _partial_covers_full(partial, full) is False
+
+    def test_lte_covers_lte_at_same_hi(self):
+        """Partial $lte T covers full $lte T (both include T)."""
+        from xlr8.analysis.brackets import TimeRange, _partial_covers_full
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 1, 15, tzinfo=timezone.utc)
+
+        partial = TimeRange(
+            lo=None, hi=t2, is_full=False, hi_inclusive=True, lo_inclusive=True
+        )
+        full = TimeRange(
+            lo=t1, hi=t2, is_full=True, hi_inclusive=True, lo_inclusive=True
+        )
+        assert _partial_covers_full(partial, full) is True
+
+    def test_lte_covers_lt_at_same_hi(self):
+        """Partial $lte T covers full $lt T (partial includes more)."""
+        from xlr8.analysis.brackets import TimeRange, _partial_covers_full
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 1, 15, tzinfo=timezone.utc)
+
+        partial = TimeRange(
+            lo=None, hi=t2, is_full=False, hi_inclusive=True, lo_inclusive=True
+        )
+        full = TimeRange(
+            lo=t1, hi=t2, is_full=True, hi_inclusive=False, lo_inclusive=True
+        )
+        assert _partial_covers_full(partial, full) is True
+
+    def test_gt_does_not_cover_gte_at_same_lo(self):
+        """Partial $gt T should NOT cover full $gte T."""
+        from xlr8.analysis.brackets import TimeRange, _partial_covers_full
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 1, 31, tzinfo=timezone.utc)
+
+        partial = TimeRange(
+            lo=t1, hi=None, is_full=False, hi_inclusive=False, lo_inclusive=False
+        )
+        full = TimeRange(
+            lo=t1, hi=t2, is_full=True, hi_inclusive=False, lo_inclusive=True
+        )
+        assert _partial_covers_full(partial, full) is False
+
+    def test_gte_covers_gte_at_same_lo(self):
+        """Partial $gte T covers full $gte T (both include T)."""
+        from xlr8.analysis.brackets import TimeRange, _partial_covers_full
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 1, 31, tzinfo=timezone.utc)
+
+        partial = TimeRange(
+            lo=t1, hi=None, is_full=False, hi_inclusive=False, lo_inclusive=True
+        )
+        full = TimeRange(
+            lo=t1, hi=t2, is_full=True, hi_inclusive=False, lo_inclusive=True
+        )
+        assert _partial_covers_full(partial, full) is True
+
+    def test_partial_strictly_beyond_full(self):
+        """Partial with hi well beyond full.hi always covers."""
+        from xlr8.analysis.brackets import TimeRange, _partial_covers_full
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        t2 = datetime(2024, 1, 15, tzinfo=timezone.utc)
+        t3 = datetime(2024, 2, 1, tzinfo=timezone.utc)
+
+        partial = TimeRange(
+            lo=None, hi=t3, is_full=False, hi_inclusive=False, lo_inclusive=True
+        )
+        full = TimeRange(
+            lo=t1, hi=t2, is_full=True, hi_inclusive=True, lo_inclusive=True
+        )
+        assert _partial_covers_full(partial, full) is True
+
+
+# =============================================================================
+# MERGE-PARTIAL-RANGES INCLUSIVITY TESTS
+# =============================================================================
+
+
+class TestMergePartialRangesInclusivity:
+    """_merge_partial_ranges should pick the most inclusive flag when
+    multiple partial ranges share the same boundary value."""
+
+    def test_gte_only_picks_inclusive_when_ambiguous(self):
+        """Two $gte-only partials with same lo: one $gte, one $gt -> pick $gte."""
+        from xlr8.analysis.brackets import TimeRange, _merge_partial_ranges
+
+        t1 = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        partials = [
+            TimeRange(
+                lo=t1, hi=None, is_full=False, hi_inclusive=False, lo_inclusive=False
+            ),  # $gt
+            TimeRange(
+                lo=t1, hi=None, is_full=False, hi_inclusive=False, lo_inclusive=True
+            ),  # $gte
+        ]
+        merged = _merge_partial_ranges(partials)
+        assert len(merged) == 1
+        assert merged[0].lo == t1
+        assert merged[0].lo_inclusive is True  # Must pick inclusive
+
+    def test_lt_only_picks_inclusive_when_ambiguous(self):
+        """Two $lt-only partials with same hi: one $lt, one $lte -> pick $lte."""
+        from xlr8.analysis.brackets import TimeRange, _merge_partial_ranges
+
+        t2 = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        partials = [
+            TimeRange(
+                lo=None, hi=t2, is_full=False, hi_inclusive=False, lo_inclusive=True
+            ),  # $lt
+            TimeRange(
+                lo=None, hi=t2, is_full=False, hi_inclusive=True, lo_inclusive=True
+            ),  # $lte
+        ]
+        merged = _merge_partial_ranges(partials)
+        assert len(merged) == 1
+        assert merged[0].hi == t2
+        assert merged[0].hi_inclusive is True  # Must pick inclusive
