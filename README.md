@@ -633,6 +633,20 @@ cursor = xlr8_col.find(
 
 Contributions welcome! ❤️ Please follow these guidelines:
 
+### Required Contribution Flow
+
+1. **Open an issue first**  
+   Every proposed change must begin with an issue.
+
+2. **Wait for triage / approval**  
+   A maintainer must review the issue and confirm that the change is approved for implementation.
+
+3. **Submit a PR linked to the approved issue**  
+   Once the issue has been triaged and approved, you may open a pull request that clearly links back to that issue.
+
+> **Pull requests opened without a prior issue will be closed.**  
+> We use issues to discuss scope, confirm fit, avoid duplicated work, and agree on the right implementation direction before code is submitted.
+
 **Setup**
 ```bash
 git clone https://github.com/XLR8-DB/xlr8.git
