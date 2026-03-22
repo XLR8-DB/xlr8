@@ -134,11 +134,44 @@ OVERLAP_PRONE_OPERATORS: Set[str] = {
     "$bitsAllClear",
     "$bitsAnyClear",
 }
-#          both match documents where field=3.
-# =============================================================================
 
-# Operators that create negation/exclusion filters
-NEGATION_OPERATORS: Set[str] = {"$nin", "$ne", "$not", "$nor"}
+
+def _merge_effective(
+    global_and: Dict[str, Any], branch: Dict[str, Any], time_field: str
+) -> Dict[str, Any]:
+    """Merge global AND conditions with a branch, intersecting time operators.
+
+    A plain ``{**global_and, **branch}`` overwrites the entire time-field
+    value when the branch also contains time conditions.  This loses any
+    global operators (e.g. ``$lt``) that the branch does not repeat.
+
+    This helper merges the operator dicts for the time field so that
+    **both** sets of constraints are preserved.  When the same operator
+    appears in both, the more restrictive value wins (``max`` for lower
+    bounds, ``min`` for upper bounds).
+    """
+    eff: Dict[str, Any] = {}
+    for k, v in global_and.items():
+        eff[k] = v
+    for k, v in branch.items():
+        if (
+            k == time_field
+            and k in eff
+            and isinstance(eff[k], dict)
+            and isinstance(v, dict)
+        ):
+            merged_ops = dict(eff[k])
+            for op, val in v.items():
+                if op in ("$gte", "$gt") and op in merged_ops:
+                    merged_ops[op] = max(merged_ops[op], val)
+                elif op in ("$lt", "$lte") and op in merged_ops:
+                    merged_ops[op] = min(merged_ops[op], val)
+                else:
+                    merged_ops[op] = val
+            eff[k] = merged_ops
+        else:
+            eff[k] = v
+    return eff
 
 
 @dataclass
@@ -353,21 +386,24 @@ def _extract_in_values(query: Dict[str, Any], field: str) -> Optional[Set[Any]]:
 
 def _find_in_fields(query: Dict[str, Any]) -> Dict[str, Set[Any]]:
     """
-    Find all fields that use $in operator and their values.
+    Find all fields with analyzable value sets ($in, $eq, or bare equality).
 
-    Only looks at top-level fields (not nested in $and, etc.)
+    Only looks at top-level fields (not nested in $and, etc.).
+    Fields using operators outside {$in, $eq, bare equality} are skipped.
 
     Args:
         query: Query dict (typically an $or branch)
 
     Returns:
-        Dict mapping field name to set of $in values
+        Dict mapping field name to set of values
 
     Examples:
         >>> _find_in_fields({"a": {"$in": [1,2]}, "b": {"$in": [3,4]}})
         {"a": {1, 2}, "b": {3, 4}}
         >>> _find_in_fields({"a": 5, "b": {"$gt": 10}})
-        {}
+        {"a": {5}}
+        >>> _find_in_fields({"a": {"$eq": 5}, "b": {"$in": [1, 2]}, "c": 10})
+        {"a": {5}, "b": {1, 2}, "c": {10}}
     """
     result: Dict[str, Set[Any]] = {}
 
@@ -382,6 +418,21 @@ def _find_in_fields(query: Dict[str, Any]) -> Dict[str, Set[Any]]:
                 except TypeError:
                     # Contains unhashable - convert to strings
                     result[field] = {str(v) for v in in_vals}
+        elif isinstance(value, dict) and "$eq" in value:
+            # Explicit $eq (e.g., {"region_id": {"$eq": 3}}) -- normalize
+            # to singleton set, same as bare equality.
+            eq_val = value["$eq"]
+            try:
+                result[field] = {eq_val}
+            except TypeError:
+                result[field] = {str(eq_val)}
+        elif not isinstance(value, dict):
+            # Equality value (e.g., {"region_id": 3}) -- normalize to singleton
+            # set so overlap detection treats it identically to $in: [3].
+            try:
+                result[field] = {value}
+            except TypeError:
+                result[field] = {str(value)}
 
     return result
 
@@ -403,11 +454,18 @@ def _check_or_branch_safety(
 
     SAFETY RULES:
     1. If ANY branch has negation operators -> UNSAFE (cannot transform)
-    2. If branches have different field sets -> UNSAFE (cannot determine overlap)
-    3. If exactly ONE $in field differs -> TRANSFORM (subtract overlapping values)
-    4. If multiple $in fields differ -> UNSAFE (explosion of combinations)
-    5. If same $in fields with disjoint values -> SAFE
-    6. If same equality values -> SAFE (same static_filter, handled by grouping)
+    2. If ANY branch has overlap-prone operators ($all, $regex, etc.) -> UNSAFE
+    3. If branches have different field sets -> UNSAFE (cannot determine overlap)
+    4. If ANY branch has unanalyzable operators ($exists, $type, $size, etc.)
+       on a non-time field -> UNSAFE (cannot reason about overlap)
+    5. If same fields with disjoint values -> SAFE
+    6. If overlapping values on one field but DISJOINT on another -> SAFE
+       (cross-field disjointness refutes overlap)
+    7. If exactly ONE field has overlap AND same time bounds -> TRANSFORM
+       (subtract overlapping values from later branches)
+    8. If multiple fields have overlap -> UNSAFE (explosion of combinations)
+    9. If overlapping values with different time bounds -> UNSAFE
+       (subtraction would lose data in non-overlapping time ranges)
 
     Args:
         branches: List of $or branch dicts
@@ -466,6 +524,22 @@ def _check_or_branch_safety(
         _find_in_fields(eb) for eb in effective_branches
     ]
 
+    # -- Unanalyzable-field guard ----------------------------------------
+    # _find_in_fields only understands $in, $eq, and bare equality.
+    # If any branch has a field with an operator we CAN'T analyze
+    # (e.g. $exists, $type, $size), we cannot reason about overlap on
+    # that field.  Fall back to unsafe -> single bracket.
+    for i, eb in enumerate(effective_branches):
+        analyzable = all_in_fields[i]
+        non_time = _get_non_time_fields(eb, time_field)
+        if analyzable.keys() != non_time:
+            missing = non_time - analyzable.keys()
+            return (
+                False,
+                f"branch {i} has unanalyzable operators on: {missing}",
+                None,
+            )
+
     # Collect all $in field names across all branches
     in_field_names: Set[str] = set()
     for in_dict in all_in_fields:
@@ -510,6 +584,40 @@ def _check_or_branch_safety(
         # No overlapping $in values - safe!
         return True, "", None
 
+    # --- Disjointness guard ---------------------------------------------
+    # Overlap on one field does NOT mean the branches truly overlap:
+    # if another field has DISJOINT value sets, no document can match
+    # both branches.  We must verify each overlapping pair is not
+    # refuted by some other field before proceeding.
+    #
+    # Example that triggers this:
+    #   branch 0: {region_id: 3, status: "active"}
+    #   branch 1: {region_id: 3, status: "inactive"}
+    #   region_id overlaps ({3} & {3}), but status is disjoint.
+    truly_overlapping: Dict[str, List[Tuple[int, int, Set[Any]]]] = {}
+    for field, overlaps in fields_with_overlap.items():
+        kept: List[Tuple[int, int, Set[Any]]] = []
+        for i, j, common in overlaps:
+            pair_disjoint = False
+            for other_field in in_field_names:
+                if other_field == field:
+                    continue
+                vals_i = all_in_fields[i].get(other_field)
+                vals_j = all_in_fields[j].get(other_field)
+                if vals_i is not None and vals_j is not None and not (vals_i & vals_j):
+                    pair_disjoint = True
+                    break
+            if not pair_disjoint:
+                kept.append((i, j, common))
+        if kept:
+            truly_overlapping[field] = kept
+
+    if not truly_overlapping:
+        # Every overlapping pair is refuted by a disjoint field - safe.
+        return True, "", None
+
+    fields_with_overlap = truly_overlapping
+
     # Rule 3 & 4: Handle overlapping $in values
     # IMPORTANT: Transformation is ONLY safe when all branches have the SAME
     # time bounds! If time bounds differ, we cannot subtract $in values because:
@@ -524,7 +632,7 @@ def _check_or_branch_safety(
     # Extract time bounds from each branch to check if they're identical
     time_bounds = []
     for br in branches:
-        combined = {**global_and, **br}
+        combined = _merge_effective(global_and, br, time_field)
         bounds, _ = extract_time_bounds_recursive(combined, time_field)
         if bounds is None:
             lo, hi = None, None
@@ -570,12 +678,18 @@ def _check_or_branch_safety(
         in_vals = _extract_in_values(eff, field)
 
         if in_vals is None:
-            # Branch uses equality on this field - add to seen
+            # Branch uses equality on this field
             if field in eff and not isinstance(eff.get(field), dict):
                 try:
-                    seen_values.add(eff[field])
+                    eq_val = eff[field]
                 except TypeError:
-                    seen_values.add(str(eff[field]))
+                    eq_val = str(eff[field])
+                # If this equality value is already covered by a prior
+                # branch's $in, this branch is fully redundant -- remove it.
+                if eq_val in seen_values:
+                    transformed[i] = None  # type: ignore
+                else:
+                    seen_values.add(eq_val)
             continue
 
         # Subtract already-seen values
@@ -655,8 +769,13 @@ def _partial_covers_full(partial: TimeRange, full: TimeRange) -> bool:
     """Check if a partial time range completely covers a full time range.
 
     A partial range covers a full range if:
-    - partial has only $gte (lo) and full.lo >= partial.lo
-    - partial has only $lt (hi) and full.hi <= partial.hi
+    - partial has only lower bound and full.lo is at or after partial.lo
+    - partial has only upper bound and full.hi is at or before partial.hi
+
+    At the same boundary value, inclusivity flags are compared:
+    the partial must be at least as inclusive as the full range.
+    E.g. partial $lt T does NOT cover full $lte T (full includes T,
+    partial does not).
 
     Args:
         partial: TimeRange with is_full=False (missing lo or hi)
@@ -668,13 +787,22 @@ def _partial_covers_full(partial: TimeRange, full: TimeRange) -> bool:
     if full.lo is None or full.hi is None:
         return False
 
-    # Partial has only lower bound ($gte): covers if full starts at or after
+    # Partial has only lower bound ($gte/$gt): covers if full starts at or after
     if partial.lo is not None and partial.hi is None:
-        return full.lo >= partial.lo
+        if full.lo > partial.lo:
+            return True
+        if full.lo == partial.lo:
+            # At same boundary: partial must be at least as inclusive as full
+            return partial.lo_inclusive or not full.lo_inclusive
+        return False
 
-    # Partial has only upper bound ($lt): covers if full ends at or before
+    # Partial has only upper bound ($lt/$lte): covers if full ends at or before
     if partial.lo is None and partial.hi is not None:
-        return full.hi <= partial.hi
+        if full.hi < partial.hi:
+            return True
+        if full.hi == partial.hi:
+            return partial.hi_inclusive or not full.hi_inclusive
+        return False
 
     return False
 
@@ -708,15 +836,15 @@ def _merge_partial_ranges(partials: List[TimeRange]) -> List[TimeRange]:
     if gte_only:
         # Filter out None values for type safety
         min_lo = min(r.lo for r in gte_only if r.lo is not None)
-        # Find the lo_inclusive from the range with min_lo
-        lo_inclusive = next(r.lo_inclusive for r in gte_only if r.lo == min_lo)
+        # If multiple ranges share the same min_lo, pick the most inclusive
+        lo_inclusive = any(r.lo_inclusive for r in gte_only if r.lo == min_lo)
         merged.append(TimeRange(min_lo, None, False, False, lo_inclusive))
 
     # For $lt-only, keep the largest hi (covers most data)
     if lt_only:
         max_hi = max(r.hi for r in lt_only if r.hi is not None)
-        # Find the hi_inclusive from the range with max_hi
-        hi_inclusive = next(r.hi_inclusive for r in lt_only if r.hi == max_hi)
+        # If multiple ranges share the same max_hi, pick the most inclusive
+        hi_inclusive = any(r.hi_inclusive for r in lt_only if r.hi == max_hi)
         merged.append(TimeRange(None, max_hi, False, hi_inclusive, True))
 
     return merged
@@ -835,7 +963,7 @@ def build_brackets_for_find(
            Example: Branch A [Jan 1-15], Branch B [Jan 10-20]
                    -> Merged [Jan 1-20]
                    Branch A [Jan 1-15], Branch B [Jan 20-31]
-                   -> Cannot merge (gap!) ✗
+                   -> Cannot merge (gap!) X
 
         4. In final bracket creation - Sets TimeRange for each output
            bracket
@@ -957,7 +1085,7 @@ def build_brackets_for_find(
             has_partial_branch = False  # Only $gte or only $lt
 
             for branch in or_list:
-                combined = {**global_and, **branch}
+                combined = _merge_effective(global_and, branch, time_field)
                 bounds, _ = extract_time_bounds_recursive(combined, time_field)
                 if bounds is None:
                     branch_lo, branch_hi, branch_hi_inc, branch_lo_inc = (
@@ -1115,10 +1243,10 @@ def build_brackets_for_find(
         if not isinstance(br, Dict):
             return False, "branch-not-dict", [], (None, None)
 
-        eff: Dict[str, Any] = {}
         if global_and:
-            eff.update(global_and)
-        eff.update(br)
+            eff = _merge_effective(global_and, br, time_field)
+        else:
+            eff = dict(br)
 
         br_bounds, _ = extract_time_bounds_recursive(eff, time_field)
         if br_bounds is None:
@@ -1187,8 +1315,30 @@ def build_brackets_for_find(
             if not covered:
                 remaining_fulls.append(fr)
 
+        # Defence-in-depth: drop any full range that overlaps with a
+        # partial range but is not fully covered by it.  Upstream
+        # inspection prevents this in practice (partial bounds ->
+        # SINGLE mode), but guarding here avoids silent duplicates
+        # if that invariant is ever broken.
+        safe_fulls: List[TimeRange] = []
+        for fr in remaining_fulls:
+            overlaps_partial = False
+            for pr in merged_partials:
+                # lo-only partial overlaps full when partial.lo < full.hi
+                if pr.lo is not None and pr.hi is None:
+                    if fr.hi is not None and pr.lo < fr.hi:
+                        overlaps_partial = True
+                        break
+                # hi-only partial overlaps full when partial.hi > full.lo
+                if pr.lo is None and pr.hi is not None:
+                    if fr.lo is not None and pr.hi > fr.lo:
+                        overlaps_partial = True
+                        break
+            if not overlaps_partial:
+                safe_fulls.append(fr)
+
         # Merge remaining full ranges
-        for r in _merge_full_ranges(remaining_fulls):
+        for r in _merge_full_ranges(safe_fulls):
             out_brackets.append(Bracket(static_filter=static, timerange=r))
 
         # Add merged partial ranges (these will be executed as single unchunked queries)

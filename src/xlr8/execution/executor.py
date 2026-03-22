@@ -251,10 +251,19 @@ def execute_parallel_stream_to_cache(
             else:
                 unchunked_brackets.append(b)
 
-        brackets_by_timerange: Dict[Tuple[datetime, datetime], List] = defaultdict(list)
+        brackets_by_timerange: Dict[Tuple[datetime, datetime, bool, bool], List] = (
+            defaultdict(list)
+        )
 
         for b in full_brackets:
-            brackets_by_timerange[(b.timerange.lo, b.timerange.hi)].append(b)
+            brackets_by_timerange[
+                (
+                    b.timerange.lo,
+                    b.timerange.hi,
+                    b.timerange.lo_inclusive,
+                    b.timerange.hi_inclusive,
+                )
+            ].append(b)
 
         time_chunks_per_bracket: List[
             Tuple[Dict[str, Any], int, datetime, datetime]
@@ -262,7 +271,12 @@ def execute_parallel_stream_to_cache(
         chunk_index = 0
 
         # Process full brackets - chunk them
-        for (lo, hi), bracket_group in brackets_by_timerange.items():
+        for (
+            lo,
+            hi,
+            grp_lo_inclusive,
+            grp_hi_inclusive,
+        ), bracket_group in brackets_by_timerange.items():
             br_chunks = chunk_time_range(
                 start=lo,
                 end=hi,
@@ -279,11 +293,15 @@ def execute_parallel_stream_to_cache(
                     chunk_filter = dict(bracket_group[0].static_filter)
                     time_clause = {}
 
-                    # Lower bound: always $gte for chunk starts
-                    time_clause["$gte"] = c_start
+                    # Lower bound: preserve original operator
+                    is_first_chunk = c_start == lo
+                    if is_first_chunk and not grp_lo_inclusive:
+                        time_clause["$gt"] = c_start
+                    else:
+                        time_clause["$gte"] = c_start
 
                     # Upper bound: use original operator if last chunk, else $lt
-                    if is_last_chunk and bracket_group[0].timerange.hi_inclusive:
+                    if is_last_chunk and grp_hi_inclusive:
                         time_clause["$lte"] = c_end
                     else:
                         time_clause["$lt"] = c_end
@@ -297,12 +315,15 @@ def execute_parallel_stream_to_cache(
                         or_branches.append(branch)
 
                     time_clause = {}
-                    time_clause["$gte"] = c_start
+                    # Lower bound: preserve original operator
+                    is_first_chunk = c_start == lo
+                    if is_first_chunk and not grp_lo_inclusive:
+                        time_clause["$gt"] = c_start
+                    else:
+                        time_clause["$gte"] = c_start
 
-                    # Use original operator if last chunk and ANY bracket is inclusive
-                    if is_last_chunk and any(
-                        b.timerange.hi_inclusive for b in bracket_group
-                    ):
+                    # Upper bound: preserve original operator
+                    if is_last_chunk and grp_hi_inclusive:
                         time_clause["$lte"] = c_end
                     else:
                         time_clause["$lt"] = c_end
