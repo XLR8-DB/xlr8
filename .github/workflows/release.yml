@@ -229,6 +229,7 @@ jobs:
         with:
           tag_name: ${{ needs.check-version.outputs.tag_name }}
           name: XLR8 ${{ needs.check-version.outputs.tag_name }}
+          prerelease: ${{ contains(needs.check-version.outputs.version, 'a') || contains(needs.check-version.outputs.version, 'b') || contains(needs.check-version.outputs.version, 'rc') }}
           files: |
             dist/*.whl
             dist/*.tar.gz
