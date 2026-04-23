@@ -52,10 +52,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 import pandas as pd
 import polars as pl
+import pyarrow as pa
 import pyarrow.compute as pc
 from bson import ObjectId
 
@@ -470,103 +472,197 @@ def _split_typed_any(node: Node) -> Tuple[Optional[Node], Optional[Node]]:
 
 
 # ---------------------------------------------------------------------------
+# Datetime literal handling — Parquet stores timestamps at a specific unit
+# (ms / us / ns) and may be tz-naive (BSON default after Arrow round-trip) or
+# tz-aware. Python ``datetime`` objects coming from the user's filter may not
+# agree on either dimension. We normalize per-engine to avoid runtime type
+# mismatches like ``timestamp[ms] vs timestamp[s, tz=UTC]``.
+# ---------------------------------------------------------------------------
+
+
+def _normalize_dt_to_arrow(dt: datetime, arrow_ts: pa.TimestampType) -> datetime:
+    """Match tz-awareness of ``dt`` to an Arrow timestamp type. Unit is
+    handled downstream by the engine (scalar construction / cast)."""
+    target_has_tz = arrow_ts.tz is not None
+    input_has_tz = dt.tzinfo is not None
+    if target_has_tz and not input_has_tz:
+        return dt.replace(tzinfo=timezone.utc)
+    if not target_has_tz and input_has_tz:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def _arrow_scalar(value: Any, arrow_ts: Optional[pa.DataType]) -> Any:
+    """Promote a ``datetime`` to a typed PyArrow scalar that matches the
+    Parquet column's unit and tz. Pass-through for non-datetime values."""
+    if arrow_ts is None or not isinstance(value, datetime):
+        return value
+    if not pa.types.is_timestamp(arrow_ts):
+        return value
+    return pa.scalar(_normalize_dt_to_arrow(value, arrow_ts), type=arrow_ts)
+
+
+def _polars_lit(value: Any, arrow_ts: Optional[pa.DataType]) -> Any:
+    """Build a typed polars literal for a datetime value. Non-datetime
+    values are returned unchanged so polars' own inference applies."""
+    if arrow_ts is None or not isinstance(value, datetime):
+        return value
+    if not pa.types.is_timestamp(arrow_ts):
+        return value
+    normalized = _normalize_dt_to_arrow(value, arrow_ts)
+    return pl.lit(normalized).cast(pl.Datetime(arrow_ts.unit, arrow_ts.tz))
+
+
+def _pandas_value(value: Any, arrow_ts: Optional[pa.DataType]) -> Any:
+    """Adjust tz-awareness of a datetime so a pandas ``Series`` comparison
+    against a ``datetime64[unit]`` column succeeds."""
+    if arrow_ts is None or not isinstance(value, datetime):
+        return value
+    if not pa.types.is_timestamp(arrow_ts):
+        return value
+    return _normalize_dt_to_arrow(value, arrow_ts)
+
+
+# ---------------------------------------------------------------------------
 # Translators — typed part
 # ---------------------------------------------------------------------------
 
 
-def _polars_expr(node: Node) -> pl.Expr:
+def _polars_expr(node: Node, ts_types: Dict[str, pa.DataType]) -> pl.Expr:
     if isinstance(node, Tautology):
         return pl.lit(True)
     if isinstance(node, Leaf):
         col = pl.col(node.field)
+        arrow_ts = ts_types.get(node.field)
         op = node.op
+        if op in ("$in", "$nin"):
+            if arrow_ts is not None and pa.types.is_timestamp(arrow_ts):
+                normalized = [
+                    _normalize_dt_to_arrow(v, arrow_ts)
+                    if isinstance(v, datetime)
+                    else v
+                    for v in node.value
+                ]
+                # ``.implode()`` treats the series as a single list-value so
+                # ``is_in`` does set-membership (polars ≥ 1.20 deprecates the
+                # ambiguous element-wise form when dtypes match exactly).
+                typed_series = pl.Series(
+                    values=normalized,
+                    dtype=pl.Datetime(arrow_ts.unit, arrow_ts.tz),
+                ).implode()
+                return (
+                    col.is_in(typed_series) if op == "$in" else ~col.is_in(typed_series)
+                )
+            return (
+                col.is_in(list(node.value))
+                if op == "$in"
+                else ~col.is_in(list(node.value))
+            )
+        val = _polars_lit(node.value, arrow_ts)
         if op == "$eq":
-            return col == node.value
+            return col == val
         if op == "$ne":
-            return col != node.value
-        if op == "$in":
-            return col.is_in(list(node.value))
-        if op == "$nin":
-            return ~col.is_in(list(node.value))
+            return col != val
         if op == "$gt":
-            return col > node.value
+            return col > val
         if op == "$gte":
-            return col >= node.value
+            return col >= val
         if op == "$lt":
-            return col < node.value
+            return col < val
         if op == "$lte":
-            return col <= node.value
+            return col <= val
         raise AssertionError(f"unknown op: {op}")
     if isinstance(node, AndNode):
-        result = _polars_expr(node.children[0])
+        result = _polars_expr(node.children[0], ts_types)
         for c in node.children[1:]:
-            result = result & _polars_expr(c)
+            result = result & _polars_expr(c, ts_types)
         return result
     if isinstance(node, OrNode):
-        result = _polars_expr(node.children[0])
+        result = _polars_expr(node.children[0], ts_types)
         for c in node.children[1:]:
-            result = result | _polars_expr(c)
+            result = result | _polars_expr(c, ts_types)
         return result
     if isinstance(node, NotNode):
-        return ~_polars_expr(node.inner)
+        return ~_polars_expr(node.inner, ts_types)
     raise AssertionError(f"unknown node: {node!r}")
 
 
-def _pyarrow_expr(node: Node) -> pc.Expression:
+def _pyarrow_expr(node: Node, ts_types: Dict[str, pa.DataType]) -> pc.Expression:
     if isinstance(node, Tautology):
         return pc.scalar(True)
     if isinstance(node, Leaf):
         f = pc.field(node.field)
+        arrow_ts = ts_types.get(node.field)
         op = node.op
+        if op in ("$in", "$nin"):
+            if arrow_ts is not None and pa.types.is_timestamp(arrow_ts):
+                normalized = [
+                    _normalize_dt_to_arrow(v, arrow_ts)
+                    if isinstance(v, datetime)
+                    else v
+                    for v in node.value
+                ]
+                typed_array = pa.array(normalized, type=arrow_ts)
+                return f.isin(typed_array) if op == "$in" else ~f.isin(typed_array)
+            return (
+                f.isin(list(node.value)) if op == "$in" else ~f.isin(list(node.value))
+            )
+        val = _arrow_scalar(node.value, arrow_ts)
         if op == "$eq":
-            return f == node.value
+            return f == val
         if op == "$ne":
-            return f != node.value
-        if op == "$in":
-            return f.isin(list(node.value))
-        if op == "$nin":
-            return ~f.isin(list(node.value))
+            return f != val
         if op == "$gt":
-            return f > node.value
+            return f > val
         if op == "$gte":
-            return f >= node.value
+            return f >= val
         if op == "$lt":
-            return f < node.value
+            return f < val
         if op == "$lte":
-            return f <= node.value
+            return f <= val
         raise AssertionError(f"unknown op: {op}")
     if isinstance(node, AndNode):
-        result = _pyarrow_expr(node.children[0])
+        result = _pyarrow_expr(node.children[0], ts_types)
         for c in node.children[1:]:
-            result = result & _pyarrow_expr(c)
+            result = result & _pyarrow_expr(c, ts_types)
         return result
     if isinstance(node, OrNode):
-        result = _pyarrow_expr(node.children[0])
+        result = _pyarrow_expr(node.children[0], ts_types)
         for c in node.children[1:]:
-            result = result | _pyarrow_expr(c)
+            result = result | _pyarrow_expr(c, ts_types)
         return result
     if isinstance(node, NotNode):
-        return ~_pyarrow_expr(node.inner)
+        return ~_pyarrow_expr(node.inner, ts_types)
     raise AssertionError(f"unknown node: {node!r}")
 
 
-def _duckdb_where(node: Node, params: List[Any]) -> str:
+def _duckdb_where(
+    node: Node, params: List[Any], ts_types: Dict[str, pa.DataType]
+) -> str:
     """Emit a DuckDB SQL fragment. Field values go through ``params``
     (appended) and are referenced as ``?`` placeholders."""
     if isinstance(node, Tautology):
         return "TRUE"
     if isinstance(node, Leaf):
         col = f'"{node.field}"'
+        arrow_ts = ts_types.get(node.field)
+
+        def _p(v: Any) -> Any:
+            if arrow_ts is not None and isinstance(v, datetime):
+                if pa.types.is_timestamp(arrow_ts):
+                    return _normalize_dt_to_arrow(v, arrow_ts)
+            return v
+
         op = node.op
         if op == "$eq":
             if node.value is None:
                 return f"{col} IS NULL"
-            params.append(node.value)
+            params.append(_p(node.value))
             return f"({col} = ?)"
         if op == "$ne":
             if node.value is None:
                 return f"{col} IS NOT NULL"
-            params.append(node.value)
+            params.append(_p(node.value))
             # Match MongoDB: $ne returns true for docs missing the field too.
             # We mirror that with IS DISTINCT FROM semantics:
             return f"({col} IS DISTINCT FROM ?)"
@@ -574,27 +670,27 @@ def _duckdb_where(node: Node, params: List[Any]) -> str:
             if not node.value:
                 return "FALSE"
             placeholders = ",".join(["?"] * len(node.value))
-            params.extend(list(node.value))
+            params.extend([_p(v) for v in node.value])
             return f"({col} IN ({placeholders}))"
         if op == "$nin":
             if not node.value:
                 return "TRUE"
             placeholders = ",".join(["?"] * len(node.value))
-            params.extend(list(node.value))
+            params.extend([_p(v) for v in node.value])
             return f"({col} NOT IN ({placeholders}) OR {col} IS NULL)"
         if op in _COMPARISON_OPS:
             sql_op = {"$gt": ">", "$gte": ">=", "$lt": "<", "$lte": "<="}[op]
-            params.append(node.value)
+            params.append(_p(node.value))
             return f"({col} {sql_op} ?)"
         raise AssertionError(f"unknown op: {op}")
     if isinstance(node, AndNode):
-        parts = [_duckdb_where(c, params) for c in node.children]
+        parts = [_duckdb_where(c, params, ts_types) for c in node.children]
         return "(" + " AND ".join(parts) + ")"
     if isinstance(node, OrNode):
-        parts = [_duckdb_where(c, params) for c in node.children]
+        parts = [_duckdb_where(c, params, ts_types) for c in node.children]
         return "(" + " OR ".join(parts) + ")"
     if isinstance(node, NotNode):
-        return "(NOT " + _duckdb_where(node.inner, params) + ")"
+        return "(NOT " + _duckdb_where(node.inner, params, ts_types) + ")"
     raise AssertionError(f"unknown node: {node!r}")
 
 
@@ -603,14 +699,18 @@ def _duckdb_where(node: Node, params: List[Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _apply_any_pandas(df: pd.DataFrame, node: Node) -> pd.DataFrame:
-    mask = _pandas_mask(df, node)
+def _apply_any_pandas(
+    df: pd.DataFrame, node: Node, ts_types: Dict[str, pa.DataType]
+) -> pd.DataFrame:
+    mask = _pandas_mask(df, node, ts_types)
     if mask is None:
         return df
     return df.loc[mask].reset_index(drop=True)
 
 
-def _pandas_mask(df: pd.DataFrame, node: Node) -> Optional[pd.Series]:
+def _pandas_mask(
+    df: pd.DataFrame, node: Node, ts_types: Dict[str, pa.DataType]
+) -> Optional[pd.Series]:
     """Build a boolean mask over df. None means "match everything"."""
     if isinstance(node, Tautology):
         return None
@@ -622,30 +722,35 @@ def _pandas_mask(df: pd.DataFrame, node: Node) -> Optional[pd.Series]:
                 "excluded it, or the field never appears in the documents."
             )
         col = df[node.field]
+        arrow_ts = ts_types.get(node.field)
+
+        def _v(v: Any) -> Any:
+            return _pandas_value(v, arrow_ts)
+
         op = node.op
         if op == "$eq":
             if node.value is None:
                 return col.isna()
-            return col == node.value
+            return col == _v(node.value)
         if op == "$ne":
             if node.value is None:
                 return col.notna()
-            return (col != node.value) | col.isna()
+            return (col != _v(node.value)) | col.isna()
         if op == "$in":
-            return col.isin(list(node.value))
+            return col.isin([_v(v) for v in node.value])
         if op == "$nin":
-            return ~col.isin(list(node.value))
+            return ~col.isin([_v(v) for v in node.value])
         if op == "$gt":
-            return col > node.value
+            return col > _v(node.value)
         if op == "$gte":
-            return col >= node.value
+            return col >= _v(node.value)
         if op == "$lt":
-            return col < node.value
+            return col < _v(node.value)
         if op == "$lte":
-            return col <= node.value
+            return col <= _v(node.value)
         raise AssertionError(f"unknown op: {op}")
     if isinstance(node, AndNode):
-        masks = [_pandas_mask(df, c) for c in node.children]
+        masks = [_pandas_mask(df, c, ts_types) for c in node.children]
         combined: Optional[pd.Series] = None
         for m in masks:
             if m is None:
@@ -653,7 +758,7 @@ def _pandas_mask(df: pd.DataFrame, node: Node) -> Optional[pd.Series]:
             combined = m if combined is None else combined & m
         return combined
     if isinstance(node, OrNode):
-        masks = [_pandas_mask(df, c) for c in node.children]
+        masks = [_pandas_mask(df, c, ts_types) for c in node.children]
         combined = None
         for m in masks:
             if m is None:
@@ -661,7 +766,7 @@ def _pandas_mask(df: pd.DataFrame, node: Node) -> Optional[pd.Series]:
             combined = m if combined is None else combined | m
         return combined
     if isinstance(node, NotNode):
-        inner = _pandas_mask(df, node.inner)
+        inner = _pandas_mask(df, node.inner, ts_types)
         if inner is None:
             # NOT(TRUE) == FALSE for every row.
             return pd.Series([False] * len(df), index=df.index)
@@ -669,7 +774,9 @@ def _pandas_mask(df: pd.DataFrame, node: Node) -> Optional[pd.Series]:
     raise AssertionError(f"unknown node: {node!r}")
 
 
-def _apply_any_polars(df: pl.DataFrame, node: Node) -> pl.DataFrame:
+def _apply_any_polars(
+    df: pl.DataFrame, node: Node, ts_types: Dict[str, pa.DataType]
+) -> pl.DataFrame:
     if isinstance(node, Tautology):
         return df
     # Ensure referenced columns exist.
@@ -680,7 +787,7 @@ def _apply_any_polars(df: pl.DataFrame, node: Node) -> pl.DataFrame:
                 "either the cache was populated with a projection that "
                 "excluded it, or the field never appears in the documents."
             )
-    return df.filter(_polars_expr(node))
+    return df.filter(_polars_expr(node, ts_types))
 
 
 def _leaf_fields(node: Node) -> Set[str]:
@@ -714,6 +821,10 @@ class CompiledPostFilter:
     typed_ast: Optional[Node]
     any_ast: Optional[Node]
     referenced_fields: Set[str] = dataclass_field(default_factory=set)
+    # Populated by ``bind_parquet_schema``. Maps referenced fields whose
+    # Parquet column is a timestamp type → that pa.TimestampType. Empty
+    # when the filter has no datetime leaves or no schema was bound yet.
+    _ts_types: Dict[str, pa.DataType] = dataclass_field(default_factory=dict)
 
     @property
     def has_typed(self) -> bool:
@@ -723,32 +834,54 @@ class CompiledPostFilter:
     def has_any(self) -> bool:
         return self.any_ast is not None and not isinstance(self.any_ast, Tautology)
 
+    def bind_parquet_schema(self, parquet_schema: pa.Schema) -> None:
+        """Extract timestamp column types for referenced fields. Must be
+        called by the reader before any ``to_*_expr`` / mask method when
+        a datetime literal might appear in the filter — otherwise
+        comparisons can fail on timestamp unit / tz mismatches between the
+        Python ``datetime`` and the Parquet ``timestamp[ms]`` column."""
+        types_map: Dict[str, pa.DataType] = {}
+        for field in self.referenced_fields:
+            idx = parquet_schema.get_field_index(field)
+            if idx >= 0:
+                ft = parquet_schema.field(idx).type
+                if pa.types.is_timestamp(ft):
+                    types_map[field] = ft
+        self._ts_types = types_map
+
     def to_polars_expr(self) -> Optional[pl.Expr]:
         if not self.has_typed:
             return None
-        return _polars_expr(self.typed_ast)  # type: ignore[arg-type]
+        return _polars_expr(self.typed_ast, self._ts_types)  # type: ignore[arg-type]
 
     def to_pyarrow_expr(self) -> Optional[pc.Expression]:
         if not self.has_typed:
             return None
-        return _pyarrow_expr(self.typed_ast)  # type: ignore[arg-type]
+        return _pyarrow_expr(self.typed_ast, self._ts_types)  # type: ignore[arg-type]
 
     def to_duckdb_where(self) -> Tuple[str, List[Any]]:
         if not self.has_typed:
             return "TRUE", []
         params: List[Any] = []
-        sql = _duckdb_where(self.typed_ast, params)  # type: ignore[arg-type]
+        sql = _duckdb_where(self.typed_ast, params, self._ts_types)  # type: ignore[arg-type]
         return sql, params
+
+    def to_pandas_mask(self, df: pd.DataFrame) -> Optional[pd.Series]:
+        """Build a pandas mask for the typed subtree. Used by reader paths
+        (e.g. ``iter_batches``) that cannot push the predicate down."""
+        if not self.has_typed:
+            return None
+        return _pandas_mask(df, self.typed_ast, self._ts_types)  # type: ignore[arg-type]
 
     def apply_any_pandas(self, df: pd.DataFrame) -> pd.DataFrame:
         if not self.has_any:
             return df
-        return _apply_any_pandas(df, self.any_ast)  # type: ignore[arg-type]
+        return _apply_any_pandas(df, self.any_ast, self._ts_types)  # type: ignore[arg-type]
 
     def apply_any_polars(self, df: pl.DataFrame) -> pl.DataFrame:
         if not self.has_any:
             return df
-        return _apply_any_polars(df, self.any_ast)  # type: ignore[arg-type]
+        return _apply_any_polars(df, self.any_ast, self._ts_types)  # type: ignore[arg-type]
 
     def apply_all_pandas(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply BOTH typed and Any() predicates in-memory on a pandas frame.
@@ -758,11 +891,11 @@ class CompiledPostFilter:
         predicate applied on the materialized rows.
         """
         if self.has_typed:
-            mask = _pandas_mask(df, self.typed_ast)  # type: ignore[arg-type]
+            mask = _pandas_mask(df, self.typed_ast, self._ts_types)  # type: ignore[arg-type]
             if mask is not None:
                 df = df.loc[mask].reset_index(drop=True)
         if self.has_any:
-            df = _apply_any_pandas(df, self.any_ast)  # type: ignore[arg-type]
+            df = _apply_any_pandas(df, self.any_ast, self._ts_types)  # type: ignore[arg-type]
         return df
 
 

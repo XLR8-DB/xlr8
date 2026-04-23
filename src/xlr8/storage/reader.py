@@ -664,12 +664,33 @@ class ParquetReader:
             ...     end_date=datetime(2024, 6, 15, tzinfo=timezone.utc),
             ... )
         """
+        # Read the parquet schema once when we'll need it for either the
+        # date-range filter or the post-filter (to bind column timestamp
+        # types onto the compiled filter).
+        need_schema = bool(
+            self.parquet_files
+            and (
+                (time_field and (start_date or end_date))
+                or (post_filter is not None and post_filter.has_typed)
+            )
+        )
+        first_file_schema = (
+            pq.read_schema(self.parquet_files[0]) if need_schema else None
+        )
+
+        # Bind parquet column types onto the post-filter so its translators
+        # produce literals at the correct unit / tz for this dataset.
+        if (
+            first_file_schema is not None
+            and post_filter is not None
+            and post_filter.has_typed
+        ):
+            post_filter.bind_parquet_schema(first_file_schema)
+
         # Build PyArrow filter for date range (predicate pushdown)
         # We'll determine the correct timestamp type from the first parquet file
         filters = None
-        if time_field and (start_date or end_date) and self.parquet_files:
-            # Get the timestamp type from the parquet schema
-            first_file_schema = pq.read_schema(self.parquet_files[0])
+        if time_field and (start_date or end_date) and first_file_schema is not None:
             field_idx = first_file_schema.get_field_index(time_field)
             if field_idx >= 0:
                 ts_type = first_file_schema.field(field_idx).type
@@ -699,9 +720,11 @@ class ParquetReader:
 
             # Apply date filter with predicate pushdown (reads only matching data)
             # Convert datetime to match Parquet column dtype (tz-aware or naive)
-            if time_field and (start_date or end_date):
-                # Get timestamp type from parquet to handle tz correctly
-                first_file_schema = pq.read_schema(self.parquet_files[0])
+            if (
+                time_field
+                and (start_date or end_date)
+                and first_file_schema is not None
+            ):
                 field_idx = first_file_schema.get_field_index(time_field)
                 ts_type = (
                     first_file_schema.field(field_idx).type
@@ -851,11 +874,29 @@ class ParquetReader:
         batch_count = 0
         total_rows = 0
 
+        # Read parquet schema once for date filtering and post-filter binding.
+        need_schema = bool(
+            self.parquet_files
+            and (
+                (time_field and (start_date or end_date))
+                or (post_filter is not None and post_filter.has_typed)
+            )
+        )
+        first_file_schema = (
+            pq.read_schema(self.parquet_files[0]) if need_schema else None
+        )
+
+        if (
+            first_file_schema is not None
+            and post_filter is not None
+            and post_filter.has_typed
+        ):
+            post_filter.bind_parquet_schema(first_file_schema)
+
         # Pre-compute converted datetimes for filtering (tz-aware or naive)
         start_converted = None
         end_converted = None
-        if time_field and (start_date or end_date) and self.parquet_files:
-            first_file_schema = pq.read_schema(self.parquet_files[0])
+        if time_field and (start_date or end_date) and first_file_schema is not None:
             field_idx = first_file_schema.get_field_index(time_field)
             ts_type = (
                 first_file_schema.field(field_idx).type
@@ -897,9 +938,7 @@ class ParquetReader:
                     # after reconstruction they'd be ObjectId objects and the
                     # equality check would silently fail.
                     if post_filter is not None and post_filter.has_typed:
-                        from xlr8.analysis.post_filter import _pandas_mask
-
-                        mask = _pandas_mask(batch_df, post_filter.typed_ast)
+                        mask = post_filter.to_pandas_mask(batch_df)
                         if mask is not None:
                             batch_df = batch_df.loc[mask].reset_index(drop=True)
                         if len(batch_df) == 0:
@@ -1055,6 +1094,9 @@ class ParquetReader:
 
             order_by = ", ".join(order_clauses)
             files = ", ".join([f"'{f}'" for f in file_paths])
+
+            if post_filter is not None and post_filter.has_typed:
+                post_filter.bind_parquet_schema(pq.read_schema(self.parquet_files[0]))
 
             where_sql, where_params = _build_duckdb_where(
                 time_field, start_date, end_date, post_filter
@@ -1344,6 +1386,9 @@ class ParquetReader:
 
             order_by = ", ".join(order_clauses)
             files = ", ".join([f"'{f}'" for f in file_paths])
+
+            if post_filter is not None and post_filter.has_typed:
+                post_filter.bind_parquet_schema(pq.read_schema(self.parquet_files[0]))
 
             where_sql, where_params = _build_duckdb_where(
                 time_field, start_date, end_date, post_filter
