@@ -715,3 +715,196 @@ class TestTranslatorsAgree:
         polars_keys = sorted(polars_df["metadata.sensor_id"].to_list())
         duckdb_keys = sorted(duckdb_df["metadata.sensor_id"].astype(str).tolist())
         assert pandas_keys == polars_keys == duckdb_keys
+
+
+def _write_naive_timestamp_fixture(dir_: Path, schema: Schema) -> None:
+    """Fixture whose time column is tz-NAIVE ``timestamp[ms]`` — matching
+    how BSON datetimes typically land after Arrow round-trip. Exercises
+    the datetime binding / tz-stripping path for filter literals that the
+    user passes as tz-aware."""
+    tbl = pa.table(
+        {
+            "recordedAt": pa.array(
+                [
+                    datetime(2024, 1, 1),
+                    datetime(2024, 1, 2),
+                    datetime(2024, 1, 3),
+                    datetime(2024, 1, 4),
+                ],
+                type=pa.timestamp("ms"),
+            ),
+            "metadata.sensor_id": pa.array(
+                [
+                    str(ObjectId()),
+                    str(ObjectId()),
+                    str(ObjectId()),
+                    str(ObjectId()),
+                ],
+                type=pa.string(),
+            ),
+            "metadata.device_id": pa.array(
+                [
+                    str(ObjectId()),
+                    str(ObjectId()),
+                    str(ObjectId()),
+                    str(ObjectId()),
+                ],
+                type=pa.string(),
+            ),
+            "status": pa.array(["a", "b", "c", "d"], type=pa.string()),
+            "count": pa.array([1, 2, 3, 4], type=pa.int64()),
+            "ratio": pa.array([0.1, 0.2, 0.3, 0.4], type=pa.float64()),
+            "active": pa.array([True, True, True, True], type=pa.bool_()),
+            "value": pa.array(
+                [_any_struct(int32_value=i) for i in [1, 2, 3, 4]],
+                type=schema.fields["value"].to_arrow(),
+            ),
+        }
+    )
+    pq.write_table(tbl, dir_ / "ts_1_100_part_0000.parquet")
+
+
+class TestDatetimeBinding:
+    """Regression tests for the tz-aware literal vs tz-naive Parquet column
+    mismatch (playground-surfaced bug: ``timestamp[ms]`` column vs
+    ``timestamp[s, tz=UTC]`` scalar — greater_equal kernel had no match)."""
+
+    def test_tz_aware_filter_on_tz_naive_column_pyarrow(self, tmp_path: Path):
+        schema = _base_schema()
+        _write_naive_timestamp_fixture(tmp_path, schema)
+        reader = ParquetReader(tmp_path)
+        cf = compile_post_filter(
+            {
+                "recordedAt": {
+                    "$gte": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                    "$lt": datetime(2024, 1, 4, tzinfo=timezone.utc),
+                }
+            },
+            schema,
+            time_field="recordedAt",
+            strip_time_field=False,
+        )
+        df = reader.to_dataframe(
+            engine="pandas", schema=schema, time_field="recordedAt", post_filter=cf
+        )
+        assert len(df) == 2
+
+    def test_tz_aware_filter_on_tz_naive_column_polars(self, tmp_path: Path):
+        schema = _base_schema()
+        _write_naive_timestamp_fixture(tmp_path, schema)
+        reader = ParquetReader(tmp_path)
+        cf = compile_post_filter(
+            {
+                "recordedAt": {
+                    "$gte": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                    "$lt": datetime(2024, 1, 4, tzinfo=timezone.utc),
+                }
+            },
+            schema,
+            time_field="recordedAt",
+            strip_time_field=False,
+        )
+        df = reader.to_dataframe(
+            engine="polars", schema=schema, time_field="recordedAt", post_filter=cf
+        )
+        assert df.shape[0] == 2
+
+    def test_tz_aware_filter_on_tz_naive_column_batches(self, tmp_path: Path):
+        schema = _base_schema()
+        _write_naive_timestamp_fixture(tmp_path, schema)
+        reader = ParquetReader(tmp_path)
+        cf = compile_post_filter(
+            {
+                "recordedAt": {
+                    "$gte": datetime(2024, 1, 2, tzinfo=timezone.utc),
+                    "$lt": datetime(2024, 1, 4, tzinfo=timezone.utc),
+                }
+            },
+            schema,
+            time_field="recordedAt",
+            strip_time_field=False,
+        )
+        batches = list(
+            reader.iter_dataframe_batches(
+                batch_size=10,
+                schema=schema,
+                time_field="recordedAt",
+                post_filter=cf,
+            )
+        )
+        assert sum(len(b) for b in batches) == 2
+
+    def test_nested_or_with_time_ranges(self, tmp_path: Path):
+        """Case 12 in the playground: $or of ($and with per-branch time
+        window). Must not raise; must return the correct union."""
+        schema = _base_schema()
+        _write_naive_timestamp_fixture(tmp_path, schema)
+        reader = ParquetReader(tmp_path)
+        cf = compile_post_filter(
+            {
+                "$or": [
+                    {"recordedAt": datetime(2024, 1, 1, tzinfo=timezone.utc)},
+                    {
+                        "$and": [
+                            {
+                                "recordedAt": {
+                                    "$gte": datetime(2024, 1, 3, tzinfo=timezone.utc),
+                                    "$lt": datetime(2024, 1, 5, tzinfo=timezone.utc),
+                                }
+                            }
+                        ]
+                    },
+                ]
+            },
+            schema,
+            time_field="recordedAt",
+            strip_time_field=False,
+        )
+        df = reader.to_dataframe(
+            engine="pandas", schema=schema, time_field="recordedAt", post_filter=cf
+        )
+        # Jan 1 (from first branch) + Jan 3 + Jan 4 (from second branch).
+        assert len(df) == 3
+
+    def test_in_with_datetime_values(self, tmp_path: Path):
+        schema = _base_schema()
+        _write_naive_timestamp_fixture(tmp_path, schema)
+        reader = ParquetReader(tmp_path)
+        cf = compile_post_filter(
+            {
+                "recordedAt": {
+                    "$in": [
+                        datetime(2024, 1, 1, tzinfo=timezone.utc),
+                        datetime(2024, 1, 3, tzinfo=timezone.utc),
+                    ]
+                }
+            },
+            schema,
+            time_field="recordedAt",
+            strip_time_field=False,
+        )
+        df_pandas = reader.to_dataframe(
+            engine="pandas", schema=schema, time_field="recordedAt", post_filter=cf
+        )
+        df_polars = reader.to_dataframe(
+            engine="polars", schema=schema, time_field="recordedAt", post_filter=cf
+        )
+        assert len(df_pandas) == 2
+        assert df_polars.shape[0] == 2
+
+    def test_bind_parquet_schema_populates_ts_types(self, tmp_path: Path):
+        schema = _base_schema()
+        _write_naive_timestamp_fixture(tmp_path, schema)
+        cf = compile_post_filter(
+            {"recordedAt": {"$gte": datetime(2024, 1, 2, tzinfo=timezone.utc)}},
+            schema,
+            time_field="recordedAt",
+            strip_time_field=False,
+        )
+        assert cf._ts_types == {}
+        parquet_schema = pq.read_schema(tmp_path / "ts_1_100_part_0000.parquet")
+        cf.bind_parquet_schema(parquet_schema)
+        assert "recordedAt" in cf._ts_types
+        assert pa.types.is_timestamp(cf._ts_types["recordedAt"])
+        assert cf._ts_types["recordedAt"].unit == "ms"
+        assert cf._ts_types["recordedAt"].tz is None
