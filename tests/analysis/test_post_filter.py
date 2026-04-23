@@ -38,7 +38,7 @@ def _base_schema() -> Schema:
         time_field="recordedAt",
         fields={
             "recordedAt": Types.Timestamp("ms", tz="UTC"),
-            "metadata.logConfig_id": Types.ObjectId(),
+            "metadata.sensor_id": Types.ObjectId(),
             "metadata.device_id": Types.ObjectId(),
             "status": Types.String(),
             "count": Types.Int(),
@@ -81,7 +81,7 @@ def _any_nested_schema() -> Schema:
 class TestResolvePath:
     def test_flat_dotted_top_level_key(self):
         schema = _base_schema()
-        resolved = schema.resolve_path("metadata.logConfig_id")
+        resolved = schema.resolve_path("metadata.sensor_id")
         assert resolved is not None
         assert not resolved.is_any
         assert isinstance(resolved.field_type, Types.ObjectId)
@@ -445,7 +445,7 @@ def _write_fixture_parquet(
                 ],
                 type=pa.timestamp("ms", tz="UTC"),
             ),
-            "metadata.logConfig_id": pa.array(
+            "metadata.sensor_id": pa.array(
                 [str(oid1), str(oid2), str(oid1), str(oid3)], type=pa.string()
             ),
             "metadata.device_id": pa.array(
@@ -499,7 +499,7 @@ class TestReaderIntegration:
         oid1, _, _ = _write_fixture_parquet(tmp_path, schema)
         reader = ParquetReader(tmp_path)
         cf = compile_post_filter(
-            {"metadata.logConfig_id": oid1},
+            {"metadata.sensor_id": oid1},
             schema,
             time_field="recordedAt",
             strip_time_field=False,
@@ -511,14 +511,14 @@ class TestReaderIntegration:
             post_filter=cf,
         )
         assert len(df) == 2
-        assert (df["metadata.logConfig_id"] == oid1).all()
+        assert (df["metadata.sensor_id"] == oid1).all()
 
     def test_pandas_engine_typed_in(self, tmp_path: Path):
         schema = _base_schema()
         oid1, _, oid3 = _write_fixture_parquet(tmp_path, schema)
         reader = ParquetReader(tmp_path)
         cf = compile_post_filter(
-            {"metadata.logConfig_id": {"$in": [oid1, oid3]}},
+            {"metadata.sensor_id": {"$in": [oid1, oid3]}},
             schema,
             time_field="recordedAt",
             strip_time_field=False,
@@ -536,7 +536,7 @@ class TestReaderIntegration:
         oid1, _, oid3 = _write_fixture_parquet(tmp_path, schema)
         reader = ParquetReader(tmp_path)
         cf = compile_post_filter(
-            {"metadata.logConfig_id": {"$in": [oid1, oid3]}},
+            {"metadata.sensor_id": {"$in": [oid1, oid3]}},
             schema,
             time_field="recordedAt",
             strip_time_field=False,
@@ -638,7 +638,7 @@ class TestReaderIntegration:
         oid1, _, _ = _write_fixture_parquet(tmp_path, schema)
         reader = ParquetReader(tmp_path)
         cf = compile_post_filter(
-            {"metadata.logConfig_id": oid1},
+            {"metadata.sensor_id": oid1},
             schema,
             time_field="recordedAt",
             strip_time_field=False,
@@ -711,7 +711,7 @@ class TestTranslatorsAgree:
         )
 
         # All three return the same rows (compare by stable key).
-        pandas_keys = sorted(pandas_df["metadata.logConfig_id"].astype(str).tolist())
-        polars_keys = sorted(polars_df["metadata.logConfig_id"].to_list())
-        duckdb_keys = sorted(duckdb_df["metadata.logConfig_id"].astype(str).tolist())
+        pandas_keys = sorted(pandas_df["metadata.sensor_id"].astype(str).tolist())
+        polars_keys = sorted(polars_df["metadata.sensor_id"].to_list())
+        duckdb_keys = sorted(duckdb_df["metadata.sensor_id"].astype(str).tolist())
         assert pandas_keys == polars_keys == duckdb_keys

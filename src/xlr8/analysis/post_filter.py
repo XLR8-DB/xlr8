@@ -8,10 +8,10 @@ any single caller actually wants to work with. This module lets callers narrow
 that cache AT READ TIME without going back to MongoDB::
 
     cursor = xlr8_col.find({"recordedAt": {"$gte": d1, "$lt": d2},
-                            "metadata.logConfig_id": {"$in": [oid1, oid2, oid3]}})
+                            "metadata.sensor_id": {"$in": [oid1, oid2, oid3]}})
     cursor.to_dataframe(...)                                          # fetches
-    cursor.to_dataframe(filter={"metadata.logConfig_id": oid1})       # narrows
-    cursor.to_dataframe(filter={"metadata.logConfig_id": oid2})       # narrows
+    cursor.to_dataframe(filter={"metadata.sensor_id": oid1})       # narrows
+    cursor.to_dataframe(filter={"metadata.sensor_id": oid2})       # narrows
 
 The filter is a subset of MongoDB Query Language (MQL) that we can confidently
 translate into push-down predicates against Parquet. What we support:

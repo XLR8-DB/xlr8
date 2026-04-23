@@ -331,8 +331,8 @@ df = cursor.to_dataframe(
 
 # Fetch a superset once, then re-slice the cache with MQL filters:
 cursor.to_dataframe()                                         # warms the cache
-df_one = cursor.to_dataframe(filter={"metadata.logConfig_id": oid1})
-df_two = cursor.to_dataframe(filter={"metadata.logConfig_id": oid2})
+df_one = cursor.to_dataframe(filter={"metadata.sensor_id": oid1})
+df_two = cursor.to_dataframe(filter={"metadata.sensor_id": oid2})
 ```
 **Best for**: Analytical queries where you need all data in memory.
 
@@ -382,12 +382,12 @@ Once a cursor has populated the Parquet cache via `.find(...).to_dataframe(...)`
 ```python
 cursor = xlr8_col.find({
     "recordedAt": {"$gte": d1, "$lt": d2},
-    "metadata.logConfig_id": {"$in": [oid1, oid2, oid3]},
+    "metadata.sensor_id": {"$in": [oid1, oid2, oid3]},
 })
 cursor.to_dataframe(chunking_granularity=timedelta(days=7))   # fetches + caches
 
-df_one = cursor.to_dataframe(filter={"metadata.logConfig_id": oid1})
-df_two = cursor.to_dataframe(filter={"metadata.logConfig_id": oid2})
+df_one = cursor.to_dataframe(filter={"metadata.sensor_id": oid1})
+df_two = cursor.to_dataframe(filter={"metadata.sensor_id": oid2})
 df_all_active = cursor.to_dataframe(filter={"status": "active"})
 ```
 
