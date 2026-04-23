@@ -328,6 +328,11 @@ df = cursor.to_dataframe(
     max_workers=8,
     flush_ram_limit_mb=512,
 )
+
+# Fetch a superset once, then re-slice the cache with MQL filters:
+cursor.to_dataframe()                                         # warms the cache
+df_one = cursor.to_dataframe(filter={"metadata.logConfig_id": oid1})
+df_two = cursor.to_dataframe(filter={"metadata.logConfig_id": oid2})
 ```
 **Best for**: Analytical queries where you need all data in memory.
 
@@ -364,6 +369,72 @@ cursor.stream_to_callback(
 )
 ```
 **Best for**: ETL pipelines, data lake ingestion.
+
+---
+
+## Cache Post-Filter: Re-slice Without Re-fetching
+
+<details>
+<summary><strong>How to query the cache with a MongoDB-style filter</strong></summary>
+
+Once a cursor has populated the Parquet cache via `.find(...).to_dataframe(...)`, subsequent calls can narrow that cache at read time **without hitting MongoDB**:
+
+```python
+cursor = xlr8_col.find({
+    "recordedAt": {"$gte": d1, "$lt": d2},
+    "metadata.logConfig_id": {"$in": [oid1, oid2, oid3]},
+})
+cursor.to_dataframe(chunking_granularity=timedelta(days=7))   # fetches + caches
+
+df_one = cursor.to_dataframe(filter={"metadata.logConfig_id": oid1})
+df_two = cursor.to_dataframe(filter={"metadata.logConfig_id": oid2})
+df_all_active = cursor.to_dataframe(filter={"status": "active"})
+```
+
+Available on `to_dataframe()`, `to_polars()`, and `to_dataframe_batches()`.
+
+### Supported operators
+
+| Category    | Operators                                 |
+|-------------|-------------------------------------------|
+| Equality    | bare value, `$eq`, `$ne`                  |
+| Set         | `$in`, `$nin`                             |
+| Comparison  | `$gt`, `$gte`, `$lt`, `$lte` (orderable)  |
+| Logical     | `$and`, `$or`, `$nor`, `$not`             |
+
+Anything outside this list (`$regex`, `$exists`, `$type`, `$size`, `$all`, `$elemMatch`, `$mod`, `$bits*`, `$expr`, `$text`, geospatial, …) raises `XLR8FilterError` immediately — no silent fallback.
+
+### Field resolution
+
+Fields are resolved against the `Schema`. Both shapes work:
+
+```python
+Schema(fields={"metadata.device_id": Types.ObjectId()})   # flat dotted key
+Schema(fields={"metadata": Types.Struct({"device_id": Types.ObjectId()})})  # nested
+```
+
+Unknown fields raise. If the schema declares a field as `Types.Any()`, the filter on that field is legal but applied **post-decode in memory** (it can't be pushed down through Parquet). Typed fields are pushed down via polars / PyArrow / DuckDB for row-group skipping.
+
+### Translation by engine
+
+- `to_polars()` → polars expressions on a `scan_parquet` lazy frame (predicate pushdown via row-group stats).
+- `to_dataframe()` without sort → PyArrow compute expressions on `pq.read_table(filters=...)`.
+- `to_dataframe()` with sort on `Types.Any()` / `Types.List()` → DuckDB `WHERE` (parameterized) + `ORDER BY` K-way merge.
+- `to_dataframe_batches()` → typed part applied on raw batches before ObjectId reconstruction; Any part applied post-decode.
+
+### Interaction with `start_date` / `end_date`
+
+When either kwarg is supplied, any time-field clause in `filter` is stripped — `start_date` / `end_date` win. This applies inside top-level implicit-AND and explicit `$and`. A time-field clause inside `$or` / `$not` / `$nor` while `start_date` / `end_date` is also supplied raises, because silently collapsing it would change query semantics.
+
+### Projection + sort
+
+Projection and sort on the underlying cursor are honored exactly as today — the filter operates on top of them. A filter field that was projected out isn't in the cache and will raise `KeyError` at read time.
+
+### Cache-bound semantics
+
+Filter time bounds are not validated against the cache's actual range. If the filter asks for times the cache doesn't cover, those rows simply don't come back — same as MongoDB's behavior when you ask for `$lt: <future-date>` on a collection that doesn't yet have data that far in time.
+
+</details>
 
 ---
 
@@ -563,6 +634,8 @@ schema = Schema(
 | `row_group_size` | `int` | `None` | Parquet row group size |
 | `cache_read` | `bool` | `True` | Read from cache if available |
 | `cache_write` | `bool` | `True` | Write results to cache |
+| `start_date` / `end_date` | `datetime \| date \| str` | `None` | Narrow cached rows to this time range |
+| `filter` | `dict` | `None` | MongoDB-style post-filter applied against the cache. See [Cache Post-Filter](#cache-post-filter-re-slice-without-re-fetching). |
 
 </details>
 

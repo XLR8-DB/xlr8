@@ -118,7 +118,7 @@ df = cursor.to_dataframe(
 |---------|-------------|
 | 🦀 **GIL-Free Rust Backend** | Python's GIL is released. Rust's Tokio runtime handles async I/O across all cores. |
 | ⚡ **Parallel MongoDB Fetching** | Queries split into time chunks. Each worker has its own MongoDB connection. |
-| 💾 **Smart Query Cache** | Results cached by query hash. Filter cached data by date range. |
+| 💾 **Smart Query Cache** | Results cached by query hash. Re-slice the cache with a MongoDB-style `filter={...}` kwarg on `to_dataframe` / `to_polars` / `to_dataframe_batches` — no extra round trips. |
 | 🔀 **DuckDB K-Way Merge** | GIL-free sorting across shards - O(N log K) complexity. |
 | 🐻‍❄️ **Pandas & Polars** | `to_dataframe()` for pandas, `to_polars()` for Polars. |
 | 📊 **Memory Control** | Set `flush_ram_limit_mb` to prevent OOM errors on large datasets. |

@@ -55,6 +55,7 @@ from __future__ import annotations
 from importlib.metadata import version as _get_version
 from typing import TYPE_CHECKING
 
+from .analysis.post_filter import XLR8FilterError
 from .schema import types as Types
 from .schema.schema import Schema
 
@@ -106,6 +107,7 @@ def __getattr__(name: str):
 __all__ = [
     "Schema",
     "Types",
+    "XLR8FilterError",
     "rust_backend",
     "accelerate",
     "XLR8Collection",

@@ -101,9 +101,75 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from bson import ObjectId
 
+from xlr8.analysis.post_filter import CompiledPostFilter
 from xlr8.constants import DEFAULT_BATCH_SIZE
 
 logger = logging.getLogger(__name__)
+
+
+def _build_duckdb_where(
+    time_field: Optional[str],
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    post_filter: Optional[CompiledPostFilter],
+) -> Tuple[str, List[Any]]:
+    """Build a parameterized DuckDB WHERE fragment that ANDs the date filter
+    (from ``start_date`` / ``end_date``) with the typed part of a post-filter.
+    Returns ``("TRUE", [])`` when no predicate applies."""
+    clauses: List[str] = []
+    params: List[Any] = []
+
+    if time_field and start_date is not None:
+        clauses.append(f'"{time_field}" >= ?')
+        params.append(start_date)
+    if time_field and end_date is not None:
+        clauses.append(f'"{time_field}" < ?')
+        params.append(end_date)
+    if post_filter is not None and post_filter.has_typed:
+        sql, pf_params = post_filter.to_duckdb_where()
+        if sql and sql != "TRUE":
+            clauses.append(sql)
+            params.extend(pf_params)
+
+    if not clauses:
+        return "TRUE", []
+    return "(" + " AND ".join(clauses) + ")", params
+
+
+def _combine_arrow_expression(
+    filters: Optional[List[Tuple[str, str, Any]]],
+    post_filter: Optional[CompiledPostFilter],
+) -> Optional[Any]:
+    """Combine a list-of-tuples date filter with a post-filter's PyArrow
+    expression into a single ``pyarrow.compute.Expression`` that can be
+    passed to ``pq.read_table(filters=...)``. Returns ``None`` when no
+    predicate applies."""
+    import pyarrow.compute as _pc
+
+    exprs: List[Any] = []
+    if filters:
+        for field_name, op, value in filters:
+            f = _pc.field(field_name)
+            if op == ">=":
+                exprs.append(f >= value)
+            elif op == ">":
+                exprs.append(f > value)
+            elif op == "<=":
+                exprs.append(f <= value)
+            elif op == "<":
+                exprs.append(f < value)
+            elif op == "=" or op == "==":
+                exprs.append(f == value)
+            else:
+                raise ValueError(f"unsupported tuple-filter op: {op!r}")
+    if post_filter is not None and post_filter.has_typed:
+        exprs.append(post_filter.to_pyarrow_expr())
+    if not exprs:
+        return None
+    combined = exprs[0]
+    for e in exprs[1:]:
+        combined = combined & e
+    return combined
 
 
 def _convert_datetime_for_filter(dt: datetime, target_type: pa.DataType) -> datetime:
@@ -568,6 +634,7 @@ class ParquetReader:
         end_date: Optional[datetime] = None,
         coerce: Literal["raise", "error"] = "raise",
         any_type_strategy: Literal["float", "string", "keep_struct"] = "float",
+        post_filter: Optional[CompiledPostFilter] = None,
     ) -> Union[pd.DataFrame, "pl.DataFrame"]:
         """
         Load all parquet files into a DataFrame.
@@ -649,17 +716,30 @@ class ParquetReader:
                     end_converted = _convert_datetime_for_filter(end_date, ts_type)
                     lf = lf.filter(pl.col(time_field) < end_converted)
 
+            # Apply typed post-filter expression BEFORE collect() so polars
+            # can push it down through row-group stats.
+            if post_filter is not None and post_filter.has_typed:
+                lf = lf.filter(post_filter.to_polars_expr())
+
             # Collect executes the query with predicate pushdown
             df = lf.collect()
 
-            return self._process_dataframe(
-                df, engine, schema, coerce, any_type_strategy
-            )
+            df = self._process_dataframe(df, engine, schema, coerce, any_type_strategy)
+
+            # Apply Any() clauses after decoding, on the materialized frame.
+            if post_filter is not None and post_filter.has_any:
+                df = post_filter.apply_any_polars(df)
+
+            return df
 
         elif engine == "pandas":
             # Return empty DataFrame if no parquet files (query returned no results)
             if not self.parquet_files:
                 return pd.DataFrame()
+
+            # Combine the date-filter expression with the typed post-filter
+            # expression for PyArrow pushdown.
+            arrow_expr = _combine_arrow_expression(filters, post_filter)
 
             # Read all files with optional filter (predicate pushdown)
             # Use PyArrow to read, then convert to pandas - this allows
@@ -668,7 +748,10 @@ class ParquetReader:
             for parquet_file in self.parquet_files:
                 try:
                     # Use PyArrow filters for efficient predicate pushdown
-                    table = pq.read_table(parquet_file, filters=filters)
+                    if arrow_expr is not None:
+                        table = pq.read_table(parquet_file, filters=arrow_expr)
+                    else:
+                        table = pq.read_table(parquet_file)
                     tables.append(table)
                 except Exception as e:
                     if coerce == "error":
@@ -718,7 +801,13 @@ class ParquetReader:
             for field_name, decoded_values in any_columns_decoded.items():
                 df[field_name] = decoded_values
 
-            return self._process_dataframe(df, engine, schema, coerce)
+            df = self._process_dataframe(df, engine, schema, coerce)
+
+            # Apply Any() clauses after decoding, on the materialized frame.
+            if post_filter is not None and post_filter.has_any:
+                df = post_filter.apply_any_pandas(df)
+
+            return df
 
         else:
             raise ValueError(f"Unknown engine: {engine}. Use 'pandas' or 'polars'")
@@ -731,6 +820,7 @@ class ParquetReader:
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
         coerce: Literal["raise", "error"] = "raise",
+        post_filter: Optional[CompiledPostFilter] = None,
     ) -> Generator[pd.DataFrame, None, None]:
         """
         Yield DataFrames in batches without loading all data into memory.
@@ -801,10 +891,30 @@ class ParquetReader:
                     if len(batch_df) == 0:
                         continue
 
+                    # Apply the TYPED part of the post-filter BEFORE
+                    # _process_dataframe. At this point ObjectId columns are
+                    # still strings (matching the normalized filter values);
+                    # after reconstruction they'd be ObjectId objects and the
+                    # equality check would silently fail.
+                    if post_filter is not None and post_filter.has_typed:
+                        from xlr8.analysis.post_filter import _pandas_mask
+
+                        mask = _pandas_mask(batch_df, post_filter.typed_ast)
+                        if mask is not None:
+                            batch_df = batch_df.loc[mask].reset_index(drop=True)
+                        if len(batch_df) == 0:
+                            continue
+
                     # Process the batch (decode structs, flatten, reconstruct ObjectIds)
                     processed_df = self._process_dataframe(
                         batch_df, "pandas", schema, coerce
                     )
+
+                    # Apply the Any() portion post-decode.
+                    if post_filter is not None and post_filter.has_any:
+                        processed_df = post_filter.apply_any_pandas(processed_df)
+                        if len(processed_df) == 0:
+                            continue
 
                     batch_count += 1
                     total_rows += len(processed_df)
@@ -829,6 +939,7 @@ class ParquetReader:
         coerce: Literal["raise", "error"] = "raise",
         memory_limit_mb: Optional[int] = None,
         threads: Optional[int] = None,
+        post_filter: Optional[CompiledPostFilter] = None,
     ) -> pd.DataFrame:
         """
         Return entire globally sorted DataFrame using DuckDB K-way merge.
@@ -944,12 +1055,20 @@ class ParquetReader:
 
             order_by = ", ".join(order_clauses)
             files = ", ".join([f"'{f}'" for f in file_paths])
-            query = f"SELECT * FROM read_parquet([{files}]) ORDER BY {order_by}"
+
+            where_sql, where_params = _build_duckdb_where(
+                time_field, start_date, end_date, post_filter
+            )
+            where_clause = f" WHERE {where_sql}" if where_sql != "TRUE" else ""
+            query = (
+                f"SELECT * FROM read_parquet([{files}])"
+                f"{where_clause} ORDER BY {order_by}"
+            )
 
             logging.debug(f"[DuckDB] K-way merge (full): {len(file_paths)} files")
 
             # Fetch entire result at once using df()
-            df = conn.execute(query).df()
+            df = conn.execute(query, where_params).df()
 
             # Ensure time field is UTC
             if time_field and time_field in df.columns:
@@ -959,30 +1078,13 @@ class ParquetReader:
                     else:
                         df[time_field] = df[time_field].dt.tz_localize("UTC")
 
-            # Apply date filtering if needed
-            # Convert datetimes to match the column's timezone state
-            if time_field and (start_date or end_date) and time_field in df.columns:
-                # After the above, time_field is always tz-aware (UTC)
-                # So we need tz-aware comparisons
-                from datetime import timezone
-
-                if start_date:
-                    start_cmp = (
-                        start_date
-                        if start_date.tzinfo
-                        else start_date.replace(tzinfo=timezone.utc)
-                    )
-                    df = df[df[time_field] >= start_cmp]
-                if end_date:
-                    end_cmp = (
-                        end_date
-                        if end_date.tzinfo
-                        else end_date.replace(tzinfo=timezone.utc)
-                    )
-                    df = df[df[time_field] < end_cmp]
-
             # Process the DataFrame (decode structs, reconstruct ObjectIds)
             df = self._process_dataframe(df, "pandas", schema, coerce)
+
+            # Apply Any() clauses post-decode — typed clauses already pushed
+            # down via the SQL WHERE above.
+            if post_filter is not None and post_filter.has_any:
+                df = post_filter.apply_any_pandas(df)
 
             conn.close()
             logging.debug(f"[DuckDB] K-way merge complete: {len(df):,} rows")
@@ -1060,6 +1162,7 @@ class ParquetReader:
         # DuckDB configuration
         memory_limit_mb: Optional[int] = None,
         threads: Optional[int] = None,
+        post_filter: Optional[CompiledPostFilter] = None,
     ) -> Generator[pd.DataFrame, None, None]:
         """
         Yield globally sorted batches using DuckDB K-way merge.
@@ -1241,9 +1344,17 @@ class ParquetReader:
 
             order_by = ", ".join(order_clauses)
             files = ", ".join([f"'{f}'" for f in file_paths])
-            query = f"SELECT * FROM read_parquet([{files}]) ORDER BY {order_by}"
 
-            result = conn.execute(query)
+            where_sql, where_params = _build_duckdb_where(
+                time_field, start_date, end_date, post_filter
+            )
+            where_clause = f" WHERE {where_sql}" if where_sql != "TRUE" else ""
+            query = (
+                f"SELECT * FROM read_parquet([{files}])"
+                f"{where_clause} ORDER BY {order_by}"
+            )
+
+            result = conn.execute(query, where_params)
 
             # Use fetchmany() cursor API - this ACTUALLY streams incrementally
             # without loading all data into memory (unlike fetch_df_chunk)
@@ -1288,32 +1399,17 @@ class ParquetReader:
                                 "UTC"
                             )
 
-                # Apply date filtering if needed
-                # After UTC conversion above, time_field is tz-aware
-                if time_field and (start_date or end_date):
-                    from datetime import timezone
-
-                    if start_date:
-                        start_cmp = (
-                            start_date
-                            if start_date.tzinfo
-                            else start_date.replace(tzinfo=timezone.utc)
-                        )
-                        batch_df = batch_df[batch_df[time_field] >= start_cmp]
-                    if end_date:
-                        end_cmp = (
-                            end_date
-                            if end_date.tzinfo
-                            else end_date.replace(tzinfo=timezone.utc)
-                        )
-                        batch_df = batch_df[batch_df[time_field] < end_cmp]
-                    if len(batch_df) == 0:
-                        continue
+                # Date filter + typed post-filter were pushed into the SQL
+                # WHERE clause above. Only the Any() portion remains.
 
                 # Process the batch (decode structs, reconstruct ObjectIds)
                 processed_df = self._process_dataframe(
                     batch_df, "pandas", schema, coerce
                 )
+                if post_filter is not None and post_filter.has_any:
+                    processed_df = post_filter.apply_any_pandas(processed_df)
+                    if len(processed_df) == 0:
+                        continue
                 yield processed_df
 
             conn.close()

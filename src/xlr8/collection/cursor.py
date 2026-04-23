@@ -109,8 +109,10 @@ logger = logging.getLogger(__name__)
 from xlr8.constants import DEFAULT_BATCH_SIZE
 from xlr8.execution.callback import execute_partitioned_callback
 from xlr8.analysis import (
+    CompiledPostFilter,
     build_brackets_for_find,
     chunk_time_range,
+    compile_post_filter,
     get_sort_field_info,
     validate_sort_field,
 )
@@ -438,6 +440,7 @@ class XLR8Cursor:
         cache_write: bool = True,
         start_date: Optional[Union[datetime, date, str]] = None,
         end_date: Optional[Union[datetime, date, str]] = None,
+        filter: Optional[Dict[str, Any]] = None,
         coerce: Literal["raise", "error"] = "raise",
         max_workers: int = 4,
         chunking_granularity: Optional[timedelta] = None,
@@ -587,11 +590,23 @@ class XLR8Cursor:
         parsed_start = parse_datetime_tz_aware(start_date, "start_date")
         parsed_end = parse_datetime_tz_aware(end_date, "end_date")
 
+        # Compile MQL post-filter (applied at read time against the cache).
+        compiled_filter = compile_post_filter(
+            filter,
+            schema,
+            time_field=schema.time_field,
+            strip_time_field=(parsed_start is not None or parsed_end is not None),
+        )
+
         if not accelerate:
-            # Fallback to regular iteration (ignores date filters)
+            # Fallback to regular iteration (ignores date filters and MQL post-filter)
             if parsed_start or parsed_end:
                 logger.warning(
                     "start_date/end_date filters are ignored when accelerate=False"
+                )
+            if filter is not None:
+                logger.warning(
+                    "filter is ignored when accelerate=False (fallback uses PyMongo)"
                 )
             return self._to_dataframe_regular()
 
@@ -627,6 +642,7 @@ class XLR8Cursor:
                 max_workers=1,  # Single worker for invalid queries
                 chunking_granularity=None,  # No chunking
                 is_chunkable=False,
+                post_filter=compiled_filter,
             )
 
         # Check for SINGLE mode - valid query but single-worker fallback
@@ -646,6 +662,7 @@ class XLR8Cursor:
                 max_workers=1,  # Single worker for SINGLE mode
                 chunking_granularity=None,  # No chunking
                 is_chunkable=False,
+                post_filter=compiled_filter,
             )
 
         # Query IS chunkable, but do we have granularity info?
@@ -668,6 +685,7 @@ class XLR8Cursor:
                 is_chunkable=False,  # Treat as non-chunkable since we can't chunk
                 flush_ram_limit_mb=flush_ram_limit_mb,  # Pass through for cache reading
                 row_group_size=row_group_size,  # Pass through for DuckDB batch
+                post_filter=compiled_filter,
             )
 
         # Use accelerated parallel execution - we have chunking info!
@@ -682,6 +700,7 @@ class XLR8Cursor:
             is_chunkable=True,
             flush_ram_limit_mb=flush_ram_limit_mb,
             row_group_size=row_group_size,
+            post_filter=compiled_filter,
         )
 
     def to_dataframe_batches(
@@ -691,6 +710,7 @@ class XLR8Cursor:
         cache_write: bool = True,
         start_date: Optional[Union[datetime, date, str]] = None,
         end_date: Optional[Union[datetime, date, str]] = None,
+        filter: Optional[Dict[str, Any]] = None,
         coerce: Literal["raise", "error"] = "raise",
         max_workers: int = 4,
         chunking_granularity: Optional[timedelta] = None,
@@ -836,6 +856,14 @@ class XLR8Cursor:
         parsed_start = parse_datetime_tz_aware(start_date, "start_date")
         parsed_end = parse_datetime_tz_aware(end_date, "end_date")
 
+        # Compile MQL post-filter.
+        compiled_filter = compile_post_filter(
+            filter,
+            schema,
+            time_field=schema.time_field,
+            strip_time_field=(parsed_start is not None or parsed_end is not None),
+        )
+
         is_chunkable, reason, brackets, _ = build_brackets_for_find(
             self._filter,
             time_field,
@@ -954,6 +982,7 @@ class XLR8Cursor:
                 coerce=coerce,
                 memory_limit_mb=flush_ram_limit_mb,  # Pass RAM limit to DuckDB
                 threads=max_workers,  # Pass thread count to DuckDB
+                post_filter=compiled_filter,
             )
         else:
             yield from reader.iter_dataframe_batches(
@@ -963,6 +992,7 @@ class XLR8Cursor:
                 start_date=parsed_start,
                 end_date=parsed_end,
                 coerce=coerce,
+                post_filter=compiled_filter,
             )
 
     def stream_to_callback(
@@ -1303,6 +1333,7 @@ class XLR8Cursor:
         cache_write: bool = True,
         start_date: Optional[Union[datetime, date, str]] = None,
         end_date: Optional[Union[datetime, date, str]] = None,
+        filter: Optional[Dict[str, Any]] = None,
         coerce: Literal["raise", "error"] = "raise",
         max_workers: int = 4,
         chunking_granularity: Optional[timedelta] = None,
@@ -1422,10 +1453,22 @@ class XLR8Cursor:
         parsed_start = parse_datetime_tz_aware(start_date, "start_date")
         parsed_end = parse_datetime_tz_aware(end_date, "end_date")
 
+        # Compile MQL post-filter (applied at read time against the cache).
+        compiled_filter = compile_post_filter(
+            filter,
+            schema,
+            time_field=schema.time_field,
+            strip_time_field=(parsed_start is not None or parsed_end is not None),
+        )
+
         if not accelerate:
             if parsed_start or parsed_end:
                 logger.warning(
                     "start_date/end_date filters are ignored when accelerate=False"
+                )
+            if filter is not None:
+                logger.warning(
+                    "filter is ignored when accelerate=False (fallback uses PyMongo)"
                 )
             # Fallback to regular iteration (native Polars from dicts)
             return self._to_polars_regular()
@@ -1478,6 +1521,7 @@ class XLR8Cursor:
                     end_date=parsed_end,
                     coerce=coerce,
                     any_type_strategy=any_type_strategy,
+                    post_filter=compiled_filter,
                 ),
             )
 
@@ -1658,6 +1702,7 @@ class XLR8Cursor:
                 start_date=parsed_start,
                 end_date=parsed_end,
                 coerce=coerce,
+                post_filter=compiled_filter,
             )
 
             if not combined_df.empty:
@@ -1687,6 +1732,7 @@ class XLR8Cursor:
                     end_date=parsed_end,
                     coerce=coerce,
                     any_type_strategy=any_type_strategy,
+                    post_filter=compiled_filter,
                 ),
             )
 
@@ -1774,6 +1820,7 @@ class XLR8Cursor:
         is_chunkable: bool = True,
         flush_ram_limit_mb: int = 512,
         row_group_size: Optional[int] = None,
+        post_filter: Optional[CompiledPostFilter] = None,
     ) -> pd.DataFrame:
         """
         Convert to DataFrame using parallel execution with Parquet caching.
@@ -1896,6 +1943,7 @@ class XLR8Cursor:
                         coerce=coerce,
                         memory_limit_mb=flush_ram_limit_mb,
                         threads=max_workers,
+                        post_filter=post_filter,
                     ),
                 )
             else:
@@ -1909,6 +1957,7 @@ class XLR8Cursor:
                         start_date=start_date,
                         end_date=end_date,
                         coerce=coerce,
+                        post_filter=post_filter,
                     ),
                 )
 
@@ -2036,6 +2085,7 @@ class XLR8Cursor:
                         coerce=coerce,
                         memory_limit_mb=flush_ram_limit_mb,
                         threads=max_workers,
+                        post_filter=post_filter,
                     ),
                 )
             else:
@@ -2049,6 +2099,7 @@ class XLR8Cursor:
                         start_date=start_date,
                         end_date=end_date,
                         coerce=coerce,
+                        post_filter=post_filter,
                     ),
                 )
 

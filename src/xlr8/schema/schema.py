@@ -4,12 +4,42 @@ Schema definition for XLR8.
 Schema describes the structure of MongoDB documents and how they map to Arrow/Parquet.
 """
 
-from typing import Dict, List
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
 import pyarrow as pa
 
 from .types import Any as AnyType
-from .types import BaseType, DateTime, Timestamp
+from .types import (
+    BaseType,
+    Bool,
+    DateTime,
+    Float,
+    Int,
+    ObjectId,
+    String,
+    Struct,
+    Timestamp,
+)
+
+# Scalar types where $gt/$gte/$lt/$lte have a well-defined ordering.
+_ORDERABLE_TYPES = (Int, Float, Bool, Timestamp, DateTime, String, ObjectId)
+
+
+@dataclass(frozen=True)
+class ResolvedField:
+    """Result of walking a dotted path through a Schema.
+
+    `is_any` is True iff the path terminates at a ``Types.Any()`` field, or the
+    path crosses a ``Types.Any()`` node (in which case the sub-path is stored
+    inside an Any blob and we cannot know its type statically). Those filters
+    must be applied post-decode in memory rather than pushed down.
+    `is_orderable` is True iff the terminal type supports $gt/$gte/$lt/$lte.
+    """
+
+    field_type: BaseType
+    is_any: bool
+    is_orderable: bool
 
 
 class Schema:
@@ -137,6 +167,63 @@ class Schema:
             KeyError: If field not in schema
         """
         return self.fields[name]
+
+    def resolve_path(self, dotted: str) -> Optional[ResolvedField]:
+        """Resolve a dotted MongoDB path against the schema.
+
+        Two shapes are supported (both appear in the wild):
+
+        1. Flat dotted keys: ``{"metadata.device_id": Types.ObjectId()}``
+        2. Nested struct: ``{"metadata": Types.Struct({"device_id": ...})}``
+
+        Both forms return the same leaf type for ``"metadata.device_id"``.
+
+        Any() semantics:
+        - If the schema declares ``"metadata": Types.Any()`` and the caller
+          asks for ``"metadata.user_id"``, we return the Any type with
+          ``is_any=True`` — the sub-path is stored inside the Any blob and the
+          filter must be applied post-decode in memory.
+        - A terminal Any() field returns ``is_any=True`` too.
+
+        Returns ``None`` when the path cannot be resolved (unknown field).
+        """
+        # Fast path: flat dotted key match.
+        flat = self.fields.get(dotted)
+        if flat is not None:
+            return ResolvedField(
+                field_type=flat,
+                is_any=isinstance(flat, AnyType),
+                is_orderable=isinstance(flat, _ORDERABLE_TYPES),
+            )
+
+        # Walk parts through nested Struct / Any.
+        parts = dotted.split(".")
+        current: Optional[BaseType] = self.fields.get(parts[0])
+        if current is None:
+            return None
+
+        for part in parts[1:]:
+            if isinstance(current, AnyType):
+                # Rest of the path lives inside an Any blob — can't push down.
+                return ResolvedField(
+                    field_type=current, is_any=True, is_orderable=False
+                )
+            if isinstance(current, Struct):
+                next_type = current.fields.get(part)
+                if next_type is None:
+                    return None
+                current = next_type
+                continue
+            # Hit a leaf scalar but there's more path to walk — dead end.
+            return None
+
+        if current is None:
+            return None
+        return ResolvedField(
+            field_type=current,
+            is_any=isinstance(current, AnyType),
+            is_orderable=isinstance(current, _ORDERABLE_TYPES),
+        )
 
     def to_spec(self) -> Dict[str, object]:
         """Export schema to a JSON-serializable specification.

@@ -31,6 +31,11 @@ from .inspector import (
     validate_query_for_chunking,
     validate_sort_field,
 )
+from .post_filter import (
+    CompiledPostFilter,
+    XLR8FilterError,
+    compile_post_filter,
+)
 
 __all__ = [
     # inspector - operator sets
@@ -55,4 +60,8 @@ __all__ = [
     "build_brackets_for_find",
     # chunker
     "chunk_time_range",
+    # post_filter
+    "XLR8FilterError",
+    "CompiledPostFilter",
+    "compile_post_filter",
 ]
