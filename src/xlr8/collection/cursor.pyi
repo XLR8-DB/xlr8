@@ -6,6 +6,7 @@ Provides IDE autocomplete for all PyMongo cursor methods plus XLR8 extensions.
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import (
     Any,
     Callable,
@@ -185,4 +186,75 @@ class XLR8Cursor(Generic[_DocumentType]):
         flush_ram_limit_mb: int = 512,
         row_group_size: Optional[int] = None,
         force: bool = False,
+        path: Optional[Union[str, Path]] = None,
     ) -> CacheHandler: ...
+
+class CacheHandler:
+    """Handle to an existing XLR8 Parquet cache directory."""
+    def __init__(
+        self,
+        cache_dir: Union[str, Path],
+        schema: Any,
+        filter_dict: Optional[Dict[str, Any]] = None,
+        projection: Optional[Dict[str, Any]] = None,
+        sort: Optional[List[Tuple[str, int]]] = None,
+    ) -> None: ...
+    @classmethod
+    def from_path(cls, path: Union[str, Path], schema: Any) -> CacheHandler: ...
+    def find(
+        self,
+        filter: Optional[Dict[str, Any]] = None,
+        projection: Optional[Dict[str, Any]] = None,
+    ) -> CacheCursor: ...
+    @property
+    def file_count(self) -> int: ...
+    @property
+    def cache_size_mb(self) -> float: ...
+    def get_metadata(self) -> Dict[str, Any]: ...
+    def __repr__(self) -> str: ...
+
+class CacheCursor:
+    """Cursor-like object for querying cached Parquet data."""
+    def sort(
+        self, key_or_list: Union[str, List[Tuple[str, int]]], direction: int = 1
+    ) -> CacheCursor: ...
+    def limit(self, n: int) -> CacheCursor: ...
+    def skip(self, n: int) -> CacheCursor: ...
+    def projection(self, proj: Dict[str, Any]) -> CacheCursor: ...
+    def to_dataframe(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        coerce: Literal["raise", "error"] = "raise",
+        flush_ram_limit_mb: int = 512,
+        threads: Optional[int] = None,
+    ) -> pd.DataFrame: ...
+    def to_polars(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        coerce: Literal["raise", "error"] = "raise",
+        any_type_strategy: Literal["float", "string", "keep_struct"] = "float",
+        flush_ram_limit_mb: int = 512,
+        threads: Optional[int] = None,
+    ) -> pl.DataFrame: ...
+    def to_dataframe_batches(
+        self,
+        batch_size: int = 10000,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        coerce: Literal["raise", "error"] = "raise",
+        flush_ram_limit_mb: int = 512,
+        threads: Optional[int] = None,
+    ) -> Generator[pd.DataFrame, None, None]: ...
+    def stream_to_callback(
+        self,
+        callback: Callable[[pa.Table, Dict[str, Any]], None],
+        partition_time_delta: timedelta,
+        partition_by: Optional[Union[str, List[str]]] = None,
+        any_type_strategy: Literal["float", "string", "keep_struct"] = "float",
+        max_workers: int = 4,
+        flush_ram_limit_mb: int = 512,
+    ) -> Dict[str, Any]: ...
+    def explain(self) -> Dict[str, Any]: ...
+    def __repr__(self) -> str: ...
