@@ -623,6 +623,7 @@ Populates the Parquet cache without reading back into a DataFrame. Returns a `Ca
 | `flush_ram_limit_mb` | `int` | `512` | Total RAM limit |
 | `row_group_size` | `int` | `None` | Parquet row group size |
 | `force` | `bool` | `False` | Re-fetch from MongoDB even if cache exists |
+| `path` | `str` / `Path` | `None` | Explicit cache directory path. When set, the cache is written here instead of the auto-generated hash folder. Use for cross-container sharing via mounted storage. |
 
 If population fails mid-way (network error, etc.), the partial cache is **automatically cleaned up** to prevent subsequent reads from returning incomplete data.
 
@@ -647,6 +648,24 @@ df = cursor.to_dataframe()
 **CacheCursor chaining methods**: `sort()`, `limit()`, `skip()`, `projection()`, `explain()`
 
 **Supported MQL operators**: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`, `$regex`, `$mod`, `$type`, `$all`, `$elemMatch`, `$size`, `$and`, `$or`, `$nor`, `$not`, bitwise operators. Unsupported: geospatial, `$expr`, `$where`, `$text`, Atlas Search.
+
+</details>
+
+<details>
+<summary><strong><code>CacheHandler.from_path(path, schema)</code></strong></summary>
+
+Create a `CacheHandler` pointing to an existing cache directory — no MongoDB connection required. Enables cross-container cache sharing via mounted storage (NFS, EFS, NTFS).
+
+```python
+from xlr8 import CacheHandler
+
+# Container B reads cache that Container A wrote to shared storage
+handler = CacheHandler.from_path(
+    "/mnt/shared_cache/my_dataset",
+    schema=schema,
+)
+df = handler.find({"status": "active"}).to_dataframe()
+```
 
 </details>
 
@@ -729,6 +748,29 @@ sensors = handler.find({"sensor_id": {"$in": ["A", "B", "C"]}}).to_polars()
 ```
 
 This is ideal for dashboards, notebooks, and iterative analysis where you fetch a broad dataset once and slice it many ways.
+
+</details>
+
+<details>
+<summary><strong>Cross-container cache sharing</strong></summary>
+
+```python
+# Container A — fetch and write to mounted storage
+handler = xlr8_col.find(query).create_cache(
+    path="/mnt/shared_cache/candlesticks_2024",
+    chunking_granularity=timedelta(days=30),
+)
+
+# Container B — read from same mounted storage, no MongoDB needed
+from xlr8 import CacheHandler
+handler = CacheHandler.from_path(
+    "/mnt/shared_cache/candlesticks_2024",
+    schema=schema,
+)
+df = handler.find({"metadata.instrument": "EUR_USD"}).to_dataframe()
+```
+
+Works with any shared filesystem: NFS, EFS, NTFS mounts, GCP Filestore, Azure Files.
 
 </details>
 
