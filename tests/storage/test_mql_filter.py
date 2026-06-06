@@ -207,9 +207,7 @@ class TestBasicComparisons:
 
     def test_implicit_eq(self, simple_schema):
         """Bare value is treated as $eq."""
-        sql, params = translate_mql_to_sql(
-            {"value": 42}, simple_schema, "timestamp"
-        )
+        sql, params = translate_mql_to_sql({"value": 42}, simple_schema, "timestamp")
         assert "=" in sql
 
     def test_gt(self, simple_schema):
@@ -246,7 +244,8 @@ class TestBasicComparisons:
         """Range query: $gte AND $lt on same field."""
         sql, params = translate_mql_to_sql(
             {"value": {"$gte": 100, "$lt": 200}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert ">=" in sql
         assert "<" in sql
@@ -262,14 +261,16 @@ class TestInOperator:
     def test_in(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"status": {"$in": ["active", "pending"]}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "IN" in sql
 
     def test_nin(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"status": {"$nin": ["deleted", "archived"]}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "NOT IN" in sql
 
@@ -290,7 +291,8 @@ class TestInOperator:
     def test_in_with_null(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"status": {"$in": [None, "active"]}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "IS NULL" in sql
         assert "IN" in sql
@@ -324,7 +326,8 @@ class TestRegexOperator:
     def test_regex(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"sensor_id": {"$regex": "^TEMP_"}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "REGEXP_MATCHES" in sql
 
@@ -339,35 +342,40 @@ class TestLogicalOperators:
         """Multiple top-level keys = implicit $and."""
         sql, params = translate_mql_to_sql(
             {"status": "active", "value": {"$gt": 100}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "AND" in sql
 
     def test_explicit_and(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"$and": [{"status": "active"}, {"value": {"$gt": 100}}]},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "AND" in sql
 
     def test_or(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"$or": [{"status": "active"}, {"status": "pending"}]},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "OR" in sql
 
     def test_nor(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"$nor": [{"status": "deleted"}, {"status": "archived"}]},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "NOT" in sql
 
     def test_not(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"status": {"$not": {"$eq": "deleted"}}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "NOT" in sql
 
@@ -381,7 +389,8 @@ class TestArrayOperators:
     def test_all(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"status": {"$all": ["active", "verified"]}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         # $all on non-list field is AND-of-equalities
         assert sql
@@ -395,7 +404,8 @@ class TestArrayOperators:
     def test_elemMatch_simple(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"status": {"$elemMatch": {"$eq": "active"}}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         # On non-list field, $elemMatch with no array is no-match
         assert sql
@@ -410,7 +420,8 @@ class TestModOperator:
     def test_mod(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"count": {"$mod": [5, 0]}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "%" in sql
 
@@ -424,7 +435,8 @@ class TestTypeOperator:
     def test_type_single(self, any_schema):
         sql, params = translate_mql_to_sql(
             {"value": {"$type": "string"}},
-            any_schema, "timestamp",
+            any_schema,
+            "timestamp",
         )
         assert "string_value" in sql
         assert "IS NOT NULL" in sql
@@ -432,7 +444,8 @@ class TestTypeOperator:
     def test_type_multiple(self, any_schema):
         sql, params = translate_mql_to_sql(
             {"value": {"$type": ["string", "double"]}},
-            any_schema, "timestamp",
+            any_schema,
+            "timestamp",
         )
         assert "OR" in sql
 
@@ -440,7 +453,8 @@ class TestTypeOperator:
         """$type on a known-type field is approximate."""
         sql, params = translate_mql_to_sql(
             {"value": {"$type": "double"}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert sql  # Should not raise
 
@@ -454,14 +468,16 @@ class TestBitwiseOperators:
     def test_bitsAllSet(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"count": {"$bitsAllSet": 3}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "&" in sql
 
     def test_bitsAllClear(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"count": {"$bitsAllClear": 3}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "&" in sql
         assert "= 0" in sql
@@ -469,14 +485,16 @@ class TestBitwiseOperators:
     def test_bitsAnySet(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"count": {"$bitsAnySet": 3}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "!= 0" in sql
 
     def test_bitsAnyClear(self, simple_schema):
         sql, params = translate_mql_to_sql(
             {"count": {"$bitsAnyClear": 3}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert "!=" in sql
 
@@ -557,9 +575,7 @@ class TestAnyTypeFields:
         assert "string_value" in sql
 
     def test_eq_null_on_any(self, any_schema):
-        sql, params = translate_mql_to_sql(
-            {"value": None}, any_schema, "timestamp"
-        )
+        sql, params = translate_mql_to_sql({"value": None}, any_schema, "timestamp")
         assert "IS NULL" in sql
 
 
@@ -575,42 +591,48 @@ class TestForbiddenOperators:
         with pytest.raises(ValueError, match="\\$near"):
             translate_mql_to_sql(
                 {"location": {"$near": [0, 0]}},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
     def test_geoWithin_rejected(self, simple_schema):
         with pytest.raises(ValueError, match="\\$geoWithin"):
             translate_mql_to_sql(
                 {"location": {"$geoWithin": {}}},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
     def test_expr_rejected(self, simple_schema):
         with pytest.raises(ValueError, match="\\$expr"):
             translate_mql_to_sql(
                 {"$expr": {"$gt": ["$a", "$b"]}},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
     def test_where_rejected(self, simple_schema):
         with pytest.raises(ValueError, match="\\$where"):
             translate_mql_to_sql(
                 {"$where": "this.value > 0"},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
     def test_text_rejected(self, simple_schema):
         with pytest.raises(ValueError, match="\\$text"):
             translate_mql_to_sql(
                 {"$text": {"$search": "hello"}},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
     def test_search_rejected(self, simple_schema):
         with pytest.raises(ValueError, match="\\$search"):
             translate_mql_to_sql(
                 {"$search": "hello"},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
     def test_nested_or_rejected(self, simple_schema):
@@ -618,7 +640,8 @@ class TestForbiddenOperators:
         with pytest.raises(ValueError, match="Nested \\$or"):
             translate_mql_to_sql(
                 {"$or": [{"$or": [{"a": 1}, {"b": 2}]}, {"c": 3}]},
-                simple_schema, "timestamp",
+                simple_schema,
+                "timestamp",
             )
 
 
@@ -630,7 +653,9 @@ class TestForbiddenOperators:
 class TestDateRange:
     def test_start_date_only(self, simple_schema, t1):
         sql, params = translate_mql_to_sql(
-            {"status": "active"}, simple_schema, "timestamp",
+            {"status": "active"},
+            simple_schema,
+            "timestamp",
             start_date=t1,
         )
         assert "timestamp" in sql
@@ -638,7 +663,9 @@ class TestDateRange:
 
     def test_end_date_only(self, simple_schema, t2):
         sql, params = translate_mql_to_sql(
-            {"status": "active"}, simple_schema, "timestamp",
+            {"status": "active"},
+            simple_schema,
+            "timestamp",
             end_date=t2,
         )
         assert "timestamp" in sql
@@ -646,8 +673,11 @@ class TestDateRange:
 
     def test_both_dates(self, simple_schema, t1, t2):
         sql, params = translate_mql_to_sql(
-            {"status": "active"}, simple_schema, "timestamp",
-            start_date=t1, end_date=t2,
+            {"status": "active"},
+            simple_schema,
+            "timestamp",
+            start_date=t1,
+            end_date=t2,
         )
         assert ">=" in sql
         assert "<" in sql
@@ -655,8 +685,11 @@ class TestDateRange:
 
     def test_dates_combined_with_mql(self, simple_schema, t1, t2):
         sql, params = translate_mql_to_sql(
-            {"value": {"$gt": 100}}, simple_schema, "timestamp",
-            start_date=t1, end_date=t2,
+            {"value": {"$gt": 100}},
+            simple_schema,
+            "timestamp",
+            start_date=t1,
+            end_date=t2,
         )
         assert "value" in sql
         assert "timestamp" in sql
@@ -674,9 +707,7 @@ class TestEdgeCases:
         assert params == {}
 
     def test_null_value_eq(self, simple_schema):
-        sql, params = translate_mql_to_sql(
-            {"status": None}, simple_schema, "timestamp"
-        )
+        sql, params = translate_mql_to_sql({"status": None}, simple_schema, "timestamp")
         assert "IS NULL" in sql
 
     def test_null_value_ne(self, simple_schema):
@@ -699,9 +730,7 @@ class TestEdgeCases:
         assert str(oid) in params.values() or str(oid) in sql
 
     def test_boolean_value(self, simple_schema):
-        sql, params = translate_mql_to_sql(
-            {"active": True}, simple_schema, "timestamp"
-        )
+        sql, params = translate_mql_to_sql({"active": True}, simple_schema, "timestamp")
         # Should have a param for True
         assert True in params.values() or "TRUE" in sql
 
@@ -709,7 +738,8 @@ class TestEdgeCases:
         """Each parameter should have a unique name."""
         sql, params = translate_mql_to_sql(
             {"status": "active", "value": {"$gte": 100, "$lt": 200}},
-            simple_schema, "timestamp",
+            simple_schema,
+            "timestamp",
         )
         assert len(params) > 0
         assert len(params) == len(set(params.keys()))

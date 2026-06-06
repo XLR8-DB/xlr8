@@ -83,14 +83,18 @@ def sample_parquet_cache(simple_schema, tmp_path):
     statuses = ["active", "active", "active", "inactive", "active", "inactive"]
     counts = [1, 2, 3, 4, 5, 6]
 
-    table = pa.table({
-        "timestamp": pa.array(timestamps, type=pa.timestamp("ms", tz="UTC")),
-        "sensor_id": pa.array(sensors, type=pa.string()),
-        "value": pa.array(values, type=pa.float64()),
-        "status": pa.array(statuses, type=pa.string()),
-        "count": pa.array(counts, type=pa.int64()),
-        "active": pa.array([True, True, False, False, True, False], type=pa.bool_()),
-    })
+    table = pa.table(
+        {
+            "timestamp": pa.array(timestamps, type=pa.timestamp("ms", tz="UTC")),
+            "sensor_id": pa.array(sensors, type=pa.string()),
+            "value": pa.array(values, type=pa.float64()),
+            "status": pa.array(statuses, type=pa.string()),
+            "count": pa.array(counts, type=pa.int64()),
+            "active": pa.array(
+                [True, True, False, False, True, False], type=pa.bool_()
+            ),
+        }
+    )
 
     pq.write_table(table, cache_dir / "test_part_0000.parquet")
     return cache_dir
@@ -103,21 +107,23 @@ def any_parquet_cache(any_schema, tmp_path):
     cache_dir.mkdir()
 
     # Build the Any struct type
-    any_struct_type = pa.struct([
-        ("float_value", pa.float64()),
-        ("int32_value", pa.int32()),
-        ("int64_value", pa.int64()),
-        ("string_value", pa.string()),
-        ("objectid_value", pa.string()),
-        ("decimal128_value", pa.string()),
-        ("regex_value", pa.string()),
-        ("binary_value", pa.string()),
-        ("document_value", pa.string()),
-        ("array_value", pa.string()),
-        ("bool_value", pa.bool_()),
-        ("datetime_value", pa.timestamp("ms")),
-        ("null_value", pa.bool_()),
-    ])
+    any_struct_type = pa.struct(
+        [
+            ("float_value", pa.float64()),
+            ("int32_value", pa.int32()),
+            ("int64_value", pa.int64()),
+            ("string_value", pa.string()),
+            ("objectid_value", pa.string()),
+            ("decimal128_value", pa.string()),
+            ("regex_value", pa.string()),
+            ("binary_value", pa.string()),
+            ("document_value", pa.string()),
+            ("array_value", pa.string()),
+            ("bool_value", pa.bool_()),
+            ("datetime_value", pa.timestamp("ms")),
+            ("null_value", pa.bool_()),
+        ]
+    )
 
     timestamps = [
         datetime(2024, 1, 15, tzinfo=timezone.utc),
@@ -182,12 +188,14 @@ def any_parquet_cache(any_schema, tmp_path):
         type=any_struct_type,
     )
 
-    table = pa.table({
-        "timestamp": pa.array(timestamps, type=pa.timestamp("ms", tz="UTC")),
-        "sensor_id": pa.array(["A", "B", "C"], type=pa.string()),
-        "value": any_value,
-        "status": pa.array(["active", "inactive", "active"], type=pa.string()),
-    })
+    table = pa.table(
+        {
+            "timestamp": pa.array(timestamps, type=pa.timestamp("ms", tz="UTC")),
+            "sensor_id": pa.array(["A", "B", "C"], type=pa.string()),
+            "value": any_value,
+            "status": pa.array(["active", "inactive", "active"], type=pa.string()),
+        }
+    )
 
     pq.write_table(table, cache_dir / "any_part_0000.parquet")
     return cache_dir
@@ -297,10 +305,7 @@ class TestCacheCursorChaining:
 
     def test_chaining(self, handler):
         cursor = (
-            handler.find({"status": "active"})
-            .sort("timestamp", -1)
-            .limit(10)
-            .skip(5)
+            handler.find({"status": "active"}).sort("timestamp", -1).limit(10).skip(5)
         )
         assert cursor._limit == 10
         assert cursor._skip == 5
@@ -351,25 +356,27 @@ class TestCacheCursorToDataFrame:
         assert all(df["sensor_id"].isin(["temp_001", "temp_002"]))
 
     def test_to_dataframe_and_filter(self, handler):
-        df = handler.find({
-            "status": "active",
-            "value": {"$gt": 20},
-        }).to_dataframe()
+        df = handler.find(
+            {
+                "status": "active",
+                "value": {"$gt": 20},
+            }
+        ).to_dataframe()
         assert len(df) > 0
         assert all(df["status"] == "active")
         assert all(df["value"] > 20)
 
     def test_to_dataframe_or_filter(self, handler):
-        df = handler.find({
-            "$or": [
-                {"sensor_id": "temp_001"},
-                {"status": "inactive"},
-            ]
-        }).to_dataframe()
+        df = handler.find(
+            {
+                "$or": [
+                    {"sensor_id": "temp_001"},
+                    {"status": "inactive"},
+                ]
+            }
+        ).to_dataframe()
         assert len(df) > 0
-        assert all(
-            (df["sensor_id"] == "temp_001") | (df["status"] == "inactive")
-        )
+        assert all((df["sensor_id"] == "temp_001") | (df["status"] == "inactive"))
 
     def test_to_dataframe_empty_result(self, handler):
         """Filter that matches no documents should return empty DataFrame."""
@@ -459,17 +466,17 @@ class TestCacheCursorBatches:
         assert total_rows == 6
 
     def test_to_dataframe_batches_with_filter(self, handler):
-        batches = list(handler.find(
-            {"sensor_id": "temp_001"}
-        ).to_dataframe_batches(batch_size=1))
+        batches = list(
+            handler.find({"sensor_id": "temp_001"}).to_dataframe_batches(batch_size=1)
+        )
         assert len(batches) == 2  # 2 rows / 1 = 2 batches
         for b in batches:
             assert all(b["sensor_id"] == "temp_001")
 
     def test_to_dataframe_batches_empty(self, handler):
-        batches = list(handler.find(
-            {"sensor_id": "nonexistent"}
-        ).to_dataframe_batches())
+        batches = list(
+            handler.find({"sensor_id": "nonexistent"}).to_dataframe_batches()
+        )
         assert len(batches) == 0
 
 
@@ -575,22 +582,26 @@ class TestMultipleParquetFiles:
         t1 = datetime(2024, 1, 15, tzinfo=timezone.utc)
         t2 = datetime(2024, 7, 15, tzinfo=timezone.utc)
 
-        table1 = pa.table({
-            "timestamp": pa.array([t1], type=pa.timestamp("ms", tz="UTC")),
-            "sensor_id": pa.array(["A"], type=pa.string()),
-            "value": pa.array([1.0], type=pa.float64()),
-            "status": pa.array(["active"], type=pa.string()),
-            "count": pa.array([1], type=pa.int64()),
-            "active": pa.array([True], type=pa.bool_()),
-        })
-        table2 = pa.table({
-            "timestamp": pa.array([t2], type=pa.timestamp("ms", tz="UTC")),
-            "sensor_id": pa.array(["B"], type=pa.string()),
-            "value": pa.array([2.0], type=pa.float64()),
-            "status": pa.array(["inactive"], type=pa.string()),
-            "count": pa.array([2], type=pa.int64()),
-            "active": pa.array([False], type=pa.bool_()),
-        })
+        table1 = pa.table(
+            {
+                "timestamp": pa.array([t1], type=pa.timestamp("ms", tz="UTC")),
+                "sensor_id": pa.array(["A"], type=pa.string()),
+                "value": pa.array([1.0], type=pa.float64()),
+                "status": pa.array(["active"], type=pa.string()),
+                "count": pa.array([1], type=pa.int64()),
+                "active": pa.array([True], type=pa.bool_()),
+            }
+        )
+        table2 = pa.table(
+            {
+                "timestamp": pa.array([t2], type=pa.timestamp("ms", tz="UTC")),
+                "sensor_id": pa.array(["B"], type=pa.string()),
+                "value": pa.array([2.0], type=pa.float64()),
+                "status": pa.array(["inactive"], type=pa.string()),
+                "count": pa.array([2], type=pa.int64()),
+                "active": pa.array([False], type=pa.bool_()),
+            }
+        )
 
         pq.write_table(table1, cache_dir / "part_0000.parquet")
         pq.write_table(table2, cache_dir / "part_0001.parquet")

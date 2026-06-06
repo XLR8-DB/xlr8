@@ -243,9 +243,7 @@ def _any_datetime_expr(column: str) -> str:
 
 def _any_null_expr(column: str) -> str:
     """Build a DuckDB expression checking if Any value is null."""
-    return (
-        f"({_quote_ident(column)}.{_ANY_NULL_FIELD} IS NOT DISTINCT FROM true)"
-    )
+    return f"({_quote_ident(column)}.{_ANY_NULL_FIELD} IS NOT DISTINCT FROM true)"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -762,9 +760,7 @@ class _TranslationContext:
         elif op in _SKIP_OPS:
             return "1=1"
         else:
-            raise ValueError(
-                f"Unsupported operator '{op}' for Parquet cache queries."
-            )
+            raise ValueError(f"Unsupported operator '{op}' for Parquet cache queries.")
 
     # ── comparison operators ─────────────────────────────────────────
 
@@ -1061,9 +1057,7 @@ class _TranslationContext:
                     f"({col} IS NOT NULL AND {_any_null_expr(field_name)} IS NOT TRUE)"
                 )
             else:
-                return (
-                    f"({col} IS NULL OR {_any_null_expr(field_name)} IS TRUE)"
-                )
+                return f"({col} IS NULL OR {_any_null_expr(field_name)} IS TRUE)"
 
         if value:
             return f"({col} IS NOT NULL)"
@@ -1262,19 +1256,19 @@ class _TranslationContext:
         # BSON type number to Any struct field mapping
         # https://www.mongodb.com/docs/manual/reference/operator/query/type/
         type_to_field = {
-            1: "float_value",    # double
-            16: "int32_value",   # 32-bit integer
-            18: "int64_value",   # 64-bit integer
-            2: "string_value",   # string
-            7: "objectid_value", # ObjectId
+            1: "float_value",  # double
+            16: "int32_value",  # 32-bit integer
+            18: "int64_value",  # 64-bit integer
+            2: "string_value",  # string
+            7: "objectid_value",  # ObjectId
             19: "decimal128_value",  # Decimal128
-            11: "regex_value",   # regex
-            5: "binary_value",   # binary
-            3: "document_value", # document
-            4: "array_value",    # array
-            8: "bool_value",     # boolean
-            9: "datetime_value", # date
-            10: "null_value",    # null
+            11: "regex_value",  # regex
+            5: "binary_value",  # binary
+            3: "document_value",  # document
+            4: "array_value",  # array
+            8: "bool_value",  # boolean
+            9: "datetime_value",  # date
+            10: "null_value",  # null
             # String aliases
             "double": "float_value",
             "int": "int32_value",
@@ -1304,9 +1298,10 @@ class _TranslationContext:
                 return conditions[0]
             return "(" + " OR ".join(conditions) + ")"
         else:
-            return self._translate_single_type(
-                field_name, type_spec, type_to_field
-            ) or "1=0"
+            return (
+                self._translate_single_type(field_name, type_spec, type_to_field)
+                or "1=0"
+            )
 
     def _translate_single_type(
         self,
@@ -1339,9 +1334,7 @@ class _TranslationContext:
             raise ValueError("$mod requires a field name")
 
         if not isinstance(mod_spec, list) or len(mod_spec) != 2:
-            raise ValueError(
-                f"$mod requires [divisor, remainder], got {mod_spec}"
-            )
+            raise ValueError(f"$mod requires [divisor, remainder], got {mod_spec}")
 
         divisor, remainder = mod_spec
 

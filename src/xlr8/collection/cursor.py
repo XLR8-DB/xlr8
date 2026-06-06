@@ -2316,7 +2316,8 @@ class XLR8Cursor:
                 "The cache will contain ALL matching documents from MongoDB; "
                 "limit/skip will be applied when querying via CacheCursor. "
                 "Consider removing limit/skip before create_cache() for clarity.",
-                self._limit, self._skip,
+                self._limit,
+                self._skip,
             )
 
         # Validate projection
@@ -2361,15 +2362,14 @@ class XLR8Cursor:
 
         # SINGLE mode or no chunking granularity → single-worker
         effective_chunkable = (
-            is_chunkable
-            and bool(brackets)
-            and chunking_granularity is not None
+            is_chunkable and bool(brackets) and chunking_granularity is not None
         )
 
         if not effective_chunkable:
             if is_chunkable and not brackets:
                 logger.info(
-                    "Query valid but not parallelizable (%s) - using single-worker", reason
+                    "Query valid but not parallelizable (%s) - using single-worker",
+                    reason,
                 )
             elif chunking_granularity is None:
                 logger.info(
@@ -2403,13 +2403,13 @@ class XLR8Cursor:
                     cache.cache_dir,
                 )
             else:
-                logger.debug(
-                    "[CreateCache] Cache miss - fetching from MongoDB..."
-                )
+                logger.debug("[CreateCache] Cache miss - fetching from MongoDB...")
             self._populate_cache(
                 cache=cache,
                 max_workers=max_workers if effective_chunkable else 1,
-                chunking_granularity=chunking_granularity if effective_chunkable else None,
+                chunking_granularity=chunking_granularity
+                if effective_chunkable
+                else None,
                 flush_ram_limit_mb=flush_ram_limit_mb,
                 is_chunkable=effective_chunkable,
                 row_group_size=row_group_size,

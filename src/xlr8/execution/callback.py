@@ -386,8 +386,7 @@ def _build_partition_query(
     if first_file:
         parquet_schema = pq.read_schema(first_file)
         columns = ", ".join(
-            f'"{parquet_schema.field(i).name}"'
-            for i in range(len(parquet_schema))
+            f'"{parquet_schema.field(i).name}"' for i in range(len(parquet_schema))
         )
     else:
         columns = "*"

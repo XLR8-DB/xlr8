@@ -949,8 +949,7 @@ class ParquetReader:
             # misinterpreting dots in column names as struct-field access
             parquet_schema = pq.read_schema(self.parquet_files[0])
             columns = ", ".join(
-                f'"{parquet_schema.field(i).name}"'
-                for i in range(len(parquet_schema))
+                f'"{parquet_schema.field(i).name}"' for i in range(len(parquet_schema))
             )
             query = f"SELECT {columns} FROM read_parquet([{files}]) ORDER BY {order_by}"
 
@@ -1254,8 +1253,7 @@ class ParquetReader:
             # misinterpreting dots in column names as struct-field access
             parquet_schema = pq.read_schema(self.parquet_files[0])
             columns = ", ".join(
-                f'"{parquet_schema.field(i).name}"'
-                for i in range(len(parquet_schema))
+                f'"{parquet_schema.field(i).name}"' for i in range(len(parquet_schema))
             )
             query = f"SELECT {columns} FROM read_parquet([{files}]) ORDER BY {order_by}"
 

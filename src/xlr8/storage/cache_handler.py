@@ -65,6 +65,7 @@ def _quote_literal(value: Any) -> str:
     if isinstance(value, float):
         # Handle special float values
         import math
+
         if math.isnan(value):
             return "'NaN'"
         if math.isinf(value):
@@ -183,9 +184,7 @@ class CacheHandler:
 
         self.parquet_files = sorted(self.cache_dir.glob("*.parquet"))
         if not self.parquet_files:
-            raise ValueError(
-                f"No Parquet files found in cache directory: {cache_dir}"
-            )
+            raise ValueError(f"No Parquet files found in cache directory: {cache_dir}")
 
     # ── public API ──────────────────────────────────────────────────
 
@@ -466,7 +465,8 @@ class CacheCursor:
                                 if coerce == "error":
                                     logger.error(
                                         "Error decoding Any struct for '%s': %s",
-                                        field_name, e
+                                        field_name,
+                                        e,
                                     )
                                 else:
                                     raise
@@ -600,7 +600,8 @@ class CacheCursor:
 
             logger.debug(
                 "[CacheCursor] Streamed %s batches, %s total rows",
-                total_batches, total_rows,
+                total_batches,
+                total_rows,
             )
 
         finally:
@@ -664,7 +665,8 @@ class CacheCursor:
             schema=self._handler.schema,
             callback=callback,
             partition_time_delta=partition_time_delta,
-            partition_by=partition_by if isinstance(partition_by, list)
+            partition_by=partition_by
+            if isinstance(partition_by, list)
             else ([partition_by] if partition_by else None),
             any_type_strategy=any_type_strategy,
             max_workers=max_workers,
@@ -910,11 +912,10 @@ class CacheCursor:
         # Decode Any-typed struct columns
         if schema is not None and any_type_strategy != "keep_struct":
             from xlr8.storage.reader import ParquetReader
+
             reader = ParquetReader.__new__(ParquetReader)
             try:
-                df = reader._decode_struct_values_polars(
-                    df, schema, any_type_strategy
-                )
+                df = reader._decode_struct_values_polars(df, schema, any_type_strategy)
             except (AttributeError, KeyError, ValueError, TypeError) as e:
                 if coerce == "error":
                     logger.error("Error decoding struct values (polars): %s", e)
