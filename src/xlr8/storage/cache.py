@@ -129,18 +129,28 @@ class CacheManager:
             filter_dict: MongoDB filter
             projection: Field projection
             sort: Sort specification
-            cache_root: Root directory for all caches (default: .cache)
+            cache_root: Root directory for all caches (default: .cache).
+                       Set to a mounted/shared path (e.g., /mnt/shared_cache)
+                       for cross-container cache sharing.
         """
         self.filter_dict = filter_dict
         self.projection = projection
         self.sort = sort
         self.cache_root = Path(cache_root)
 
-        # Generate query hash
+        # Generate query hash (unless path is explicitly provided)
         self.query_hash = hash_query(filter_dict, projection, sort)
 
         # Cache directory for this specific query
         self.cache_dir = self.cache_root / self.query_hash
+
+    def set_cache_dir(self, path: Path) -> None:
+        """Override the cache directory with an explicit path.
+
+        Used by create_cache(path=...) for cross-container cache sharing.
+        When set, the auto-generated hash-based directory is ignored.
+        """
+        self.cache_dir = Path(path)
 
     def ensure_cache_dir(self) -> Path:
         """

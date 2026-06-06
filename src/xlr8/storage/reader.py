@@ -944,7 +944,14 @@ class ParquetReader:
 
             order_by = ", ".join(order_clauses)
             files = ", ".join([f"'{f}'" for f in file_paths])
-            query = f"SELECT * FROM read_parquet([{files}]) ORDER BY {order_by}"
+
+            # Build explicit quoted column list to prevent DuckDB from
+            # misinterpreting dots in column names as struct-field access
+            parquet_schema = pq.read_schema(self.parquet_files[0])
+            columns = ", ".join(
+                f'"{parquet_schema.field(i).name}"' for i in range(len(parquet_schema))
+            )
+            query = f"SELECT {columns} FROM read_parquet([{files}]) ORDER BY {order_by}"
 
             logging.debug(f"[DuckDB] K-way merge (full): {len(file_paths)} files")
 
@@ -1241,7 +1248,14 @@ class ParquetReader:
 
             order_by = ", ".join(order_clauses)
             files = ", ".join([f"'{f}'" for f in file_paths])
-            query = f"SELECT * FROM read_parquet([{files}]) ORDER BY {order_by}"
+
+            # Build explicit quoted column list to prevent DuckDB from
+            # misinterpreting dots in column names as struct-field access
+            parquet_schema = pq.read_schema(self.parquet_files[0])
+            columns = ", ".join(
+                f'"{parquet_schema.field(i).name}"' for i in range(len(parquet_schema))
+            )
+            query = f"SELECT {columns} FROM read_parquet([{files}]) ORDER BY {order_by}"
 
             result = conn.execute(query)
 

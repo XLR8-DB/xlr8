@@ -73,11 +73,17 @@ if TYPE_CHECKING:
     from .collection.cursor import XLR8Cursor as XLR8Cursor
     from .collection.wrapper import XLR8Collection as XLR8Collection
     from .collection.wrapper import accelerate as accelerate
+    from .storage.cache_handler import CacheCursor as CacheCursor
+    from .storage.cache_handler import CacheHandler as CacheHandler
+
+
+_storage_exports_cached: dict[str, object] | None = None
 
 
 def __getattr__(name: str):
     global _rust_backend_cached
     global _collection_exports_cached
+    global _storage_exports_cached
     if name == "rust_backend":
         if _rust_backend_cached is None:
             # Import the module directly to avoid recursion
@@ -100,6 +106,16 @@ def __getattr__(name: str):
             }
         return _collection_exports_cached[name]
 
+    if name in {"CacheHandler", "CacheCursor"}:
+        if _storage_exports_cached is None:
+            from .storage.cache_handler import CacheCursor, CacheHandler
+
+            _storage_exports_cached = {
+                "CacheCursor": CacheCursor,
+                "CacheHandler": CacheHandler,
+            }
+        return _storage_exports_cached[name]
+
     raise AttributeError(f"module 'xlr8' has no attribute '{name}'")
 
 
@@ -110,4 +126,6 @@ __all__ = [
     "accelerate",
     "XLR8Collection",
     "XLR8Cursor",
+    "CacheHandler",
+    "CacheCursor",
 ]
