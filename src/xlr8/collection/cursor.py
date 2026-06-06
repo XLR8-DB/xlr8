@@ -115,7 +115,7 @@ from xlr8.analysis import (
     validate_sort_field,
 )
 from xlr8.schema.types import Any as AnyType, List as ListType
-from xlr8.storage import CacheManager, ParquetReader
+from xlr8.storage import CacheManager, CacheHandler, ParquetReader
 from xlr8.execution import execute_parallel_stream_to_cache
 
 
@@ -1762,6 +1762,85 @@ class XLR8Cursor:
 
         return pl.from_dicts(docs)
 
+    def _populate_cache(
+        self,
+        cache: Any,
+        max_workers: int,
+        chunking_granularity: Optional[timedelta],
+        flush_ram_limit_mb: int,
+        is_chunkable: bool,
+        row_group_size: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Populate the Parquet cache by fetching data from MongoDB.
+
+        Extracted common logic from _to_dataframe_accelerated() so it can
+        be shared with create_cache().
+
+        CRITICAL: If population fails (e.g., network error), the partially-
+        written cache directory is cleaned up to prevent subsequent cache
+        reads from returning incomplete data.
+
+        Args:
+            cache: CacheManager instance.
+            max_workers: Maximum parallel workers.
+            chunking_granularity: Time granularity for chunking (None = single-worker).
+            flush_ram_limit_mb: RAM budget for buffered data.
+            is_chunkable: Whether query is chunkable.
+            row_group_size: Rows per Parquet row group.
+
+        Returns:
+            Result dict from execute_parallel_stream_to_cache.
+
+        Raises:
+            Exception: Re-raises any exception from the Rust backend after
+                       cleaning up the partial cache.
+        """
+        # Ensure clean start — clear any pre-existing partial cache
+        # (could exist from a previous failed population attempt)
+        if cache.exists():
+            logger.warning(
+                "Clearing existing partial cache at %s before populating. "
+                "This may indicate a previous failed attempt.",
+                cache.cache_dir,
+            )
+            cache.clean()
+
+        cache.ensure_cache_dir()
+
+        try:
+            result = execute_parallel_stream_to_cache(
+                pymongo_collection=self._collection.pymongo_collection,
+                filter_dict=self._filter,
+                schema=self._collection.schema,
+                cache_manager=cache,
+                projection=self._projection,
+                approx_document_size_bytes=self._collection.approx_document_size_bytes,
+                max_workers=max_workers,
+                peak_ram_limit_mb=flush_ram_limit_mb,
+                chunking_granularity=chunking_granularity,
+                mongo_uri=self._collection.mongo_uri,
+                row_group_size=row_group_size,
+            )
+        except Exception:
+            # Clean up partial cache on failure to prevent
+            # subsequent reads from returning incomplete data
+            logger.error(
+                "Cache population failed — cleaning up partial cache at %s",
+                cache.cache_dir,
+                exc_info=True,
+            )
+            cache.clean()
+            raise
+
+        logging.debug("\n[Cache] Cache written:")
+        logging.debug(f"  - Total docs: {result['total_docs']:,}")
+        logging.debug(f"  - Total files: {result['total_files']}")
+        logging.debug(f"  - Workers: {result['workers']}")
+        logging.debug(f"  - Duration: {result['duration_s']:.2f}s")
+        logging.debug(f"  - Cache dir: {cache.cache_dir}")
+
+        return result
+
     def _to_dataframe_accelerated(
         self,
         cache_read: bool,
@@ -1960,37 +2039,17 @@ class XLR8Cursor:
         )
 
         if cache_write:
-            # CRITICAL: If cache_read=False but cache_write=True and cache exists,
-            # we need to clear the old cache first to avoid duplicate data
-            if not cache_read and cache.exists():
-                logging.debug(
-                    "Clearing existing cache (cache_read=False, starting fresh)..."
-                )
-                cache.clean()
-            # chunking_granularity is passed from to_dataframe()
-            # If None, execute_parallel_stream_to_cache will use single-worker mode
-
-            # Streaming path: fetch -> encode -> write Parquet (memory efficient)
-            result = execute_parallel_stream_to_cache(
-                pymongo_collection=self._collection.pymongo_collection,
-                filter_dict=self._filter,
-                schema=schema,
-                cache_manager=cache,
-                projection=self._projection,
-                approx_document_size_bytes=self._collection.approx_document_size_bytes,
-                max_workers=max_workers,  # From to_dataframe() parameter
-                peak_ram_limit_mb=flush_ram_limit_mb,
-                chunking_granularity=chunking_granularity,  # None = single-worker mode
-                mongo_uri=self._collection.mongo_uri,
+            # _populate_cache() handles cleanup internally:
+            # - Clears any pre-existing partial cache before starting
+            # - Cleans up on failure (network error, etc.) for atomicity
+            self._populate_cache(
+                cache=cache,
+                max_workers=max_workers,
+                chunking_granularity=chunking_granularity,
+                flush_ram_limit_mb=flush_ram_limit_mb,
+                is_chunkable=is_chunkable,
                 row_group_size=row_group_size,
             )
-
-            logging.debug("\n[Cache] Cache written:")
-            logging.debug(f"  - Total docs: {result['total_docs']:,}")
-            logging.debug(f"  - Total files: {result['total_files']}")
-            logging.debug(f"  - Workers: {result['workers']}")
-            logging.debug(f"  - Duration: {result['duration_s']:.2f}s")
-            logging.debug(f"  - Cache dir: {cache.cache_dir}")
 
             # Now read from cache to build DataFrame (with optional date filter)
             logging.debug("\n[Cache] Reading from cache to build DataFrame...")
@@ -2159,3 +2218,185 @@ class XLR8Cursor:
             result["accelerated"] = True
 
         return result
+
+    def create_cache(
+        self,
+        max_workers: int = 4,
+        chunking_granularity: Optional[timedelta] = None,
+        flush_ram_limit_mb: int = 512,
+        row_group_size: Optional[int] = None,
+        force: bool = False,
+    ) -> "CacheHandler":
+        """
+        Populate the Parquet cache WITHOUT reading back into a DataFrame.
+
+        Does everything to_dataframe() does in the cache-miss path:
+        1. Validates query and projection
+        2. Determines chunkability
+        3. Builds brackets and execution plan
+        4. Executes parallel Rust fetch → Parquet cache
+
+        But stops BEFORE reading Parquet back into a DataFrame.
+        Returns a CacheHandler that can be used to query the cached data
+        with new MQL filters.
+
+        Cache atomicity: If population fails (network error, etc.), the
+        partial cache is automatically cleaned up so subsequent calls
+        don't read incomplete data.
+
+        Args:
+            max_workers: Maximum parallel workers (default: 4). More workers
+                        use more RAM but process faster. Ignored for
+                        non-chunkable queries.
+            chunking_granularity: Time granularity for chunking the query.
+                        Example: timedelta(days=1) chunks by day.
+                        REQUIRED for parallel execution. If None, uses
+                        single-worker mode.
+            flush_ram_limit_mb: RAM limit in MB for buffered data before
+                        flushing to Parquet (default: 512).
+            row_group_size: Rows per Parquet row group. If None, uses Rust
+                        default (100,000).
+            force: If True, always re-fetch from MongoDB even if cache
+                        already exists. Default (False) reuses existing
+                        cache for efficiency.
+
+        Returns:
+            CacheHandler for querying the cached data with .find().
+
+        Raises:
+            ValueError: If no schema is provided.
+            ValueError: If query cannot be executed.
+
+        Example:
+            >>> cursor = collection.find({
+            ...     "timestamp": {"$gte": start, "$lt": end}
+            ... })
+            >>> handler = cursor.create_cache(chunking_granularity=timedelta(days=30))
+            >>>
+            >>> # Now query cache with different MQL filters
+            >>> df1 = handler.find({"status": "active"}).to_dataframe()
+            >>> df2 = handler.find({"value": {"$gt": 100}}).sort("ts", -1).limit(50).to_dataframe()
+        """
+        # Schema is required
+        schema = self._collection.schema
+        if schema is None:
+            raise ValueError(
+                "Schema is required for create_cache(). "
+                "Provide a schema when creating the collection: "
+                "xlr8_collection = accelerate(collection, schema=my_schema)"
+            )
+
+        # CRITICAL: limit() and skip() — warn but don't reject
+        # The cache stores all data; skip/limit are applied later via CacheCursor
+        if self._limit > 0 or self._skip > 0:
+            logger.warning(
+                "create_cache() called with limit=%d, skip=%d. "
+                "The cache will contain ALL matching documents from MongoDB; "
+                "limit/skip will be applied when querying via CacheCursor. "
+                "Consider removing limit/skip before create_cache() for clarity.",
+                self._limit, self._skip,
+            )
+
+        # Validate projection
+        if self._projection:
+            projection_values = [v for k, v in self._projection.items() if k != "_id"]
+            is_inclusion = any(v == 1 for v in projection_values)
+            if is_inclusion:
+                time_in_projection = (
+                    schema.time_field in self._projection
+                    and self._projection[schema.time_field] == 1
+                )
+                if not time_in_projection:
+                    raise ValueError(
+                        f"Projection must include time field '{schema.time_field}'. "
+                        f"Projection: {self._projection}"
+                    )
+
+        # Validate sort field if specified
+        if self._sort:
+            sort_validation = validate_sort_field(self._sort, schema)
+            if not sort_validation.is_valid:
+                raise ValueError(f"Sort validation failed: {sort_validation.reason}")
+
+        # Validate chunking granularity
+        if chunking_granularity is not None:
+            if chunking_granularity.total_seconds() <= 0:
+                raise ValueError(
+                    f"chunking_granularity must be positive, got {chunking_granularity}"
+                )
+
+        # Determine chunkability
+        is_chunkable, reason, brackets, _ = build_brackets_for_find(
+            self._filter,
+            schema.time_field,
+            self._sort,
+        )
+
+        if not is_chunkable:
+            logger.info(
+                "Query has invalid syntax (%s) - executing as non-chunkable", reason
+            )
+
+        # SINGLE mode or no chunking granularity → single-worker
+        effective_chunkable = (
+            is_chunkable
+            and bool(brackets)
+            and chunking_granularity is not None
+        )
+
+        if not effective_chunkable:
+            if is_chunkable and not brackets:
+                logger.info(
+                    "Query valid but not parallelizable (%s) - using single-worker", reason
+                )
+            elif chunking_granularity is None:
+                logger.info(
+                    "chunking_granularity not provided - using single-worker mode"
+                )
+
+        # Mark cursor as started
+        if not self._started:
+            self._started = True
+
+        # Create cache manager (hashes query to unique directory)
+        cache = CacheManager(
+            filter_dict=self._filter,
+            projection=self._projection,
+            sort=self._sort,
+        )
+
+        # Populate cache
+        # _populate_cache() handles cleanup internally:
+        # - Clears any pre-existing partial cache before starting
+        # - Cleans up on failure (network error, etc.) for atomicity
+        if force or not cache.exists():
+            if cache.exists():
+                logger.debug(
+                    "[CreateCache] Forcing re-population of existing cache at %s",
+                    cache.cache_dir,
+                )
+            else:
+                logger.debug(
+                    "[CreateCache] Cache miss - fetching from MongoDB..."
+                )
+            self._populate_cache(
+                cache=cache,
+                max_workers=max_workers if effective_chunkable else 1,
+                chunking_granularity=chunking_granularity if effective_chunkable else None,
+                flush_ram_limit_mb=flush_ram_limit_mb,
+                is_chunkable=effective_chunkable,
+                row_group_size=row_group_size,
+            )
+        else:
+            logger.debug(
+                "[CreateCache] Cache already exists at %s — reusing", cache.cache_dir
+            )
+
+        # Return handler
+        return CacheHandler(
+            cache_dir=cache.cache_dir,
+            schema=schema,
+            filter_dict=self._filter,
+            projection=self._projection,
+            sort=self._sort,
+        )
