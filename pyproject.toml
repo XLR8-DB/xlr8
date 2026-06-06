@@ -77,7 +77,3 @@ reportShadowedImports = false
 reportUnusedVariable = false
 reportGeneralTypeIssues = "warning"  # Downgrade type issues to warnings
 
-[tool.uv.workspace]
-members = [
-    "development/xlr8_playground",
-]
