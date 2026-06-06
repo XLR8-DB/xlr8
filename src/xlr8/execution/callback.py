@@ -46,6 +46,7 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, cast
 
 import polars as pl
 import pyarrow as pa
+import pyarrow.parquet as pq
 
 from xlr8.schema.types import Any as AnyType
 from xlr8.schema.types import ObjectId as ObjectIdType
@@ -326,6 +327,7 @@ def _build_partition_query(
     time_field: str,
     work_item: PartitionWorkItem,
     sort_ascending: bool = True,
+    extra_where_clause: Optional[str] = None,
 ) -> str:
     """
     Build DuckDB query to fetch data for a single partition.
@@ -335,6 +337,7 @@ def _build_partition_query(
         time_field: Timestamp field name
         work_item: Partition work item with time bounds and partition values
         sort_ascending: Sort direction for time field
+        extra_where_clause: Additional WHERE clause to inject (e.g., MQL filter).
 
     Returns:
         DuckDB SQL query string
@@ -370,11 +373,27 @@ def _build_partition_query(
                 escaped = str(value).replace("'", "''")
                 where_clauses.append(f"\"{field}\" = '{escaped}'")
 
+    # Inject extra WHERE clause (e.g., MQL filter from CacheCursor)
+    if extra_where_clause:
+        where_clauses.append(f"({extra_where_clause})")
+
     where_clause = " AND ".join(where_clauses)
     order_dir = "ASC" if sort_ascending else "DESC"
 
+    # Build explicit quoted column list to prevent DuckDB from
+    # misinterpreting dots in column names as struct-field access
+    first_file = parquet_files[0] if parquet_files else None
+    if first_file:
+        parquet_schema = pq.read_schema(first_file)
+        columns = ", ".join(
+            f'"{parquet_schema.field(i).name}"'
+            for i in range(len(parquet_schema))
+        )
+    else:
+        columns = "*"
+
     return f"""
-        SELECT *
+        SELECT {columns}
         FROM read_parquet([{files_list}])
         WHERE {where_clause}
         ORDER BY "{time_field}" {order_dir}
@@ -570,6 +589,7 @@ def _execute_partition_callback(
     sort_ascending: bool,
     memory_limit_mb: int,
     threads: int = 1,
+    extra_where_clause: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute callback for a single partition (runs in thread).
@@ -591,6 +611,7 @@ def _execute_partition_callback(
         sort_ascending: Sort direction
         memory_limit_mb: DuckDB memory limit
         threads: DuckDB thread count (per worker, usually 1)
+        extra_where_clause: Additional WHERE clause injected into query.
 
     Returns:
         Dict with rows processed and partition info
@@ -604,6 +625,7 @@ def _execute_partition_callback(
             time_field=time_field,
             work_item=work_item,
             sort_ascending=sort_ascending,
+            extra_where_clause=extra_where_clause,
         )
 
         # Execute query
@@ -673,6 +695,7 @@ def execute_partitioned_callback(
     max_workers: int,
     sort_ascending: bool,
     memory_limit_mb: int,
+    extra_where_clause: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Orchestrate parallel callback execution for partitioned data.
@@ -689,6 +712,8 @@ def execute_partitioned_callback(
         max_workers: Number of parallel callback threads
         sort_ascending: Sort direction for time field
         memory_limit_mb: Total memory limit for DuckDB operations
+        extra_where_clause: Additional WHERE clause injected into each
+                          partition query (e.g., MQL filter from CacheCursor).
 
     Returns:
         Dict with total_partitions, total_rows, skipped_partitions, duration_s
@@ -754,6 +779,7 @@ def execute_partitioned_callback(
                 sort_ascending=sort_ascending,
                 memory_limit_mb=worker_memory_mb,
                 threads=1,  # Each worker uses 1 DuckDB thread
+                extra_where_clause=extra_where_clause,
             ): item
             for item in work_items
         }
