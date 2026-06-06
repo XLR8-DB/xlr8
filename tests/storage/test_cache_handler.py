@@ -12,26 +12,19 @@ Tests cover:
 - stream_to_callback
 """
 
-import json
-import pytest
-import tempfile
-from datetime import datetime, timezone, timedelta
-from pathlib import Path
+from datetime import datetime, timezone
 
 import pandas as pd
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
-from bson import ObjectId
+import pytest
 
-from xlr8.storage.cache_handler import (
-    CacheHandler,
-    CacheCursor,
-    _inline_params,
-    _quote_literal,
-)
 from xlr8.schema import Schema, Types
-
+from xlr8.storage.cache_handler import (
+    CacheCursor,
+    CacheHandler,
+)
 
 # ────────────────────────────────────────────────────────────────
 # Test fixtures
@@ -351,7 +344,9 @@ class TestCacheCursorToDataFrame:
         assert all(df["value"] > 30)
 
     def test_to_dataframe_in_filter(self, handler):
-        df = handler.find({"sensor_id": {"$in": ["temp_001", "temp_002"]}}).to_dataframe()
+        df = handler.find(
+            {"sensor_id": {"$in": ["temp_001", "temp_002"]}}
+        ).to_dataframe()
         assert len(df) == 4
         assert all(df["sensor_id"].isin(["temp_001", "temp_002"]))
 
@@ -545,7 +540,9 @@ class TestCacheCursorEdgeCases:
         assert "temp_001" not in df["sensor_id"].values
 
     def test_nin_filter(self, handler):
-        df = handler.find({"sensor_id": {"$nin": ["temp_001", "temp_002"]}}).to_dataframe()
+        df = handler.find(
+            {"sensor_id": {"$nin": ["temp_001", "temp_002"]}}
+        ).to_dataframe()
         assert len(df) == 2
         assert all(s == "temp_003" for s in df["sensor_id"])
 
@@ -556,7 +553,6 @@ class TestCacheCursorEdgeCases:
 
     def test_missing_field_in_filter_raises(self, handler):
         """Filter referencing a field not in the Parquet schema raises an error."""
-        from xlr8.storage.mql_filter import translate_mql_to_sql
 
         # The translator generates SQL — DuckDB will reject unknown columns
         # This is expected: the field truly doesn't exist in the cached data

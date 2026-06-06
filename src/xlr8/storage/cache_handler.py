@@ -18,9 +18,19 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Generator, Iterator, List, Literal, Optional, Tuple, Union, cast
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Generator,
+    List,
+    Literal,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import duckdb
 import pandas as pd
@@ -31,7 +41,6 @@ from bson import ObjectId
 
 from xlr8.constants import DEFAULT_BATCH_SIZE
 from xlr8.storage.mql_filter import translate_mql_to_sql
-from xlr8.storage.reader import _convert_datetime_for_filter
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +160,7 @@ class CacheHandler:
         Args:
             cache_dir: Path to the Parquet cache directory.
             schema: XLR8 Schema object with field type definitions.
-            filter_dict: The original MQL query that populated this cache (for reference).
+            filter_dict: The original MQL query that populated this cache.
             projection: The projection used when populating the cache.
             sort: The sort used when populating the cache.
 
@@ -232,7 +241,11 @@ class CacheHandler:
             "original_filter": self.original_filter,
             "original_sort": self.original_sort,
             "time_field": self.time_field,
-            "schema_fields": list(self.schema.fields.keys()) if hasattr(self.schema, "fields") else [],
+            "schema_fields": (
+                list(self.schema.fields.keys())
+                if hasattr(self.schema, "fields")
+                else []
+            ),
         }
 
     def __repr__(self) -> str:
@@ -596,7 +609,7 @@ class CacheCursor:
     def stream_to_callback(
         self,
         callback: Callable[["pa.Table", Dict[str, Any]], None],
-        partition_time_delta: "timedelta",
+        partition_time_delta: timedelta,
         partition_by: Optional[Union[str, List[str]]] = None,
         any_type_strategy: Literal["float", "string", "keep_struct"] = "float",
         max_workers: int = 4,
@@ -611,7 +624,7 @@ class CacheCursor:
             callback: Function(arrow_table, metadata_dict) called per partition.
             partition_time_delta: Time bucket size (e.g., timedelta(days=7)).
             partition_by: Optional field(s) for additional partitioning.
-            any_type_strategy: How to decode Any() structs ("float"/"string"/"keep_struct").
+            any_type_strategy: Any() decode mode ("float"/"string"/"keep_struct").
             max_workers: Number of parallel callback threads.
             flush_ram_limit_mb: DuckDB memory limit in MB.
 
@@ -756,11 +769,11 @@ class CacheCursor:
         force DuckDB to treat them as literal column names.
 
         MongoDB projection semantics:
-        - Inclusion: {"field": 1, "other": 1} → only those fields (+ _id unless excluded)
+        - Inclusion: {"field": 1, ...} → only those fields (+ _id unless excluded)
         - Exclusion: {"field": 0} → all fields except field
-        - Mixed inclusion/exclusion (except _id) is not allowed in MongoDB
+        - Mixed inclusion/exclusion (except _id) is invalid in MongoDB
         """
-        # Discover actual column names from Parquet (avoids DuckDB dot-interpretation bug)
+        # Discover column names from Parquet (avoids DuckDB dot-interpretation bug)
         all_columns = self._get_parquet_column_names()
 
         if not self._projection:
@@ -804,7 +817,11 @@ class CacheCursor:
 
         # Validate sort fields against schema
         try:
-            from xlr8.analysis.inspector import validate_sort_field, generate_sort_sql, has_natural_sort
+            from xlr8.analysis.inspector import (
+                generate_sort_sql,
+                has_natural_sort,
+                validate_sort_field,
+            )
         except ImportError:
             # Fallback: simple sort
             parts = []

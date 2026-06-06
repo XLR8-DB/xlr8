@@ -28,7 +28,6 @@ import polars as pl
 import pyarrow as pa
 from bson.code import Code
 from pymongo.cursor_shared import _Hint, _Sort
-from xlr8.storage.cache_handler import CacheHandler
 from pymongo.synchronous.client_session import ClientSession
 from pymongo.synchronous.collection import Collection
 from pymongo.synchronous.cursor import Cursor as PyMongoCursor

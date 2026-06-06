@@ -15,22 +15,20 @@ Tests cover:
 - Edge cases (empty queries, nulls, ObjectIds)
 """
 
-import pytest
 from datetime import datetime, timezone
+
+import pytest
 from bson import ObjectId
 
+from xlr8.schema import Schema, Types
+from xlr8.storage.cache_handler import _inline_params, _quote_literal
 from xlr8.storage.mql_filter import (
-    translate_mql_to_sql,
     _any_numeric_coalesce,
     _any_string_coalesce,
-    _detect_list_value_kind,
     _detect_value_kind,
     _format_param_value,
-    _is_any_type,
+    translate_mql_to_sql,
 )
-from xlr8.storage.cache_handler import _inline_params, _quote_literal
-from xlr8.schema import Schema, Types
-
 
 # ────────────────────────────────────────────────────────────────
 # Test fixtures
@@ -99,7 +97,8 @@ class TestDetectValueKind:
         assert _detect_value_kind(False) == "bool"
 
     def test_datetime(self):
-        assert _detect_value_kind(datetime(2024, 1, 1, tzinfo=timezone.utc)) == "datetime"
+        dt = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        assert _detect_value_kind(dt) == "datetime"
 
     def test_objectid(self):
         assert _detect_value_kind(ObjectId()) == "objectid"

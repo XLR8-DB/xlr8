@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 from bson import ObjectId
 
@@ -264,7 +264,7 @@ def translate_mql_to_sql(
     """Translate a MongoDB filter query to a DuckDB SQL WHERE clause.
 
     Args:
-        query: MongoDB query filter dict (e.g., {"status": "active", "value": {"$gt": 100}})
+        query: MongoDB filter dict (e.g., {"status": "active", "value": {"$gt": 100}})
         schema: XLR8 Schema object with field type definitions
         time_field: Name of the time field (for date range filtering)
         start_date: Optional start date filter (inclusive)
@@ -406,7 +406,7 @@ class _TranslationContext:
                         if depth > 1:
                             raise ValueError(
                                 f"Nested $or (depth {depth}) is not supported for "
-                                f"Parquet cache queries. Maximum supported $or depth is 1."
+                                f"Parquet cache queries. Max $or depth is 1."
                             )
                         for branch in value:
                             if isinstance(branch, dict):
@@ -640,11 +640,17 @@ class _TranslationContext:
 
         # Handle logical operators at field level: $and, $or, $nor
         if "$and" in op_dict:
-            return self._translate_field_level_logical("$and", op_dict["$and"], field_name)
+            return self._translate_field_level_logical(
+                "$and", op_dict["$and"], field_name
+            )
         if "$or" in op_dict:
-            return self._translate_field_level_logical("$or", op_dict["$or"], field_name)
+            return self._translate_field_level_logical(
+                "$or", op_dict["$or"], field_name
+            )
         if "$nor" in op_dict:
-            inner = self._translate_field_level_logical("$or", op_dict["$nor"], field_name)
+            inner = self._translate_field_level_logical(
+                "$or", op_dict["$nor"], field_name
+            )
             return f"NOT ({inner})"
 
         # Regular operators — translate each and AND them together
@@ -733,7 +739,7 @@ class _TranslationContext:
         elif op == "$regex":
             return self._translate_regex(field_name, value, None)
         elif op == "$options":
-            # $options should only appear alongside $regex — handled in _translate_operator_dict
+            # $options appears alongside $regex — handled in _translate_operator_dict
             # At this level, it means someone used $options alone, which is a no-op
             return "1=1"
         elif op == "$not":
