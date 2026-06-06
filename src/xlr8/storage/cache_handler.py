@@ -243,6 +243,41 @@ class CacheHandler:
             f"size={self.cache_size_mb:.1f}MB)"
         )
 
+    @classmethod
+    def from_path(
+        cls,
+        path: Union[str, Path],
+        schema: Any,
+    ) -> "CacheHandler":
+        """Create a CacheHandler pointing to an existing cache directory.
+
+        Enables cross-container cache sharing via mounted storage.
+        Container A creates the cache with create_cache(name="my_dataset"),
+        container B mounts the same volume and uses from_path() to access it.
+
+        Args:
+            path: Path to the cache directory containing .parquet files.
+            schema: XLR8 Schema matching the cached data.
+
+        Returns:
+            CacheHandler ready for .find() queries.
+
+        Raises:
+            FileNotFoundError: If path does not exist.
+            ValueError: If path contains no Parquet files.
+
+        Example:
+            >>> # Container A (writes cache)
+            >>> handler = cursor.create_cache(name="sensor_data_2024")
+            >>> # Container B (reads cache from mounted storage)
+            >>> handler = CacheHandler.from_path(
+            ...     "/mnt/shared_cache/sensor_data_2024",
+            ...     schema=schema,
+            ... )
+            >>> df = handler.find({"status": "active"}).to_dataframe()
+        """
+        return cls(cache_dir=Path(path), schema=schema)
+
 
 # ─────────────────────────────────────────────────────────────────────
 # CacheCursor
