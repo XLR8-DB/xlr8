@@ -96,6 +96,7 @@ from typing import (
     cast,
 )
 from datetime import datetime, date, timezone, timedelta
+from pathlib import Path
 import logging
 import warnings
 import pandas as pd
@@ -2226,6 +2227,7 @@ class XLR8Cursor:
         flush_ram_limit_mb: int = 512,
         row_group_size: Optional[int] = None,
         force: bool = False,
+        path: Optional[Union[str, Path]] = None,
     ) -> "CacheHandler":
         """
         Populate the Parquet cache WITHOUT reading back into a DataFrame.
@@ -2259,6 +2261,12 @@ class XLR8Cursor:
             force: If True, always re-fetch from MongoDB even if cache
                         already exists. Default (False) reuses existing
                         cache for efficiency.
+            path: Optional path to store the cache. When provided, data
+                        is written directly to this directory instead of
+                        the auto-generated hash-based path. Enables
+                        cross-container cache sharing via mounted storage
+                        (NFS, EFS, NTFS mount). Other containers can then
+                        use CacheHandler.from_path() to read it.
 
         Returns:
             CacheHandler for querying the cached data with .find().
@@ -2276,6 +2284,20 @@ class XLR8Cursor:
             >>> # Now query cache with different MQL filters
             >>> df1 = handler.find({"status": "active"}).to_dataframe()
             >>> df2 = handler.find({"value": {"$gt": 100}}).sort("ts", -1).limit(50).to_dataframe()
+
+        Cross-container cache sharing:
+            >>> # Container A — writes to mounted storage
+            >>> handler = cursor.create_cache(
+            ...     path="/mnt/shared_cache/my_dataset",
+            ...     chunking_granularity=timedelta(days=30),
+            ... )
+            >>>
+            >>> # Container B — reads from same mounted storage
+            >>> handler = CacheHandler.from_path(
+            ...     "/mnt/shared_cache/my_dataset",
+            ...     schema=schema,
+            ... )
+            >>> df = handler.find({"status": "active"}).to_dataframe()
         """
         # Schema is required
         schema = self._collection.schema
@@ -2364,6 +2386,11 @@ class XLR8Cursor:
             projection=self._projection,
             sort=self._sort,
         )
+
+        # Override cache directory if explicit path provided
+        # (enables cross-container cache sharing via mounted storage)
+        if path is not None:
+            cache.set_cache_dir(Path(path))
 
         # Populate cache
         # _populate_cache() handles cleanup internally:
