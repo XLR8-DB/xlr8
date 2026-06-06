@@ -32,12 +32,13 @@
 df = pd.DataFrame(collection.find(query))
 
 # After: XLR8 - just wrap and go!
-xlr8_collection = accelerate(collection, schema, mongodb_uri)
-                                                ^ Union(str, callback)
+xlr8_collection = accelerate(collection, schema, mongo_uri)
 df = xlr8_collection.find(query).to_dataframe()
 ```
 
-That's it. Same query syntax, same DataFrame output-just faster.
+> `mongo_uri` can be a `str` or a `Callable[[], str]` for dynamic credential rotation.
+
+That's it. Same query syntax, same DataFrame output - just faster.
 
 ---
 
@@ -64,7 +65,7 @@ flowchart LR
 
 **CPU/GIL Bound**: Even with the data in hand, Python's Global Interpreter Lock (GIL) means BSON decoding and DataFrame construction happen on a single core.
 
-These aren't PyMongo limitations-they're inherent to Python's design. XLR8 provides a solution.
+These aren't PyMongo limitations — they're inherent to Python's single-threaded design. XLR8 provides a solution.
 
 ---
 
@@ -103,9 +104,9 @@ flowchart LR
     end
 ```
 
-XLR8 releases Python's GIL and hands execution to a Rust backend powered by Tokio's async runtime. Multiple workers fetch from MongoDB in parallel, convert BSON to Arrow, and write Parquet shards-all without touching the GIL.
+XLR8 releases Python's GIL and hands execution to a Rust backend powered by Tokio's async runtime. Multiple workers fetch from MongoDB in parallel, convert BSON to Arrow, and write Parquet shards, all without touching the GIL.
 
-The result? Your analytical queries run **upto 4x faster**, especially for large result sets.
+The result? Your analytical queries run **up to 4x faster**, especially for large result sets.
 
 ---
 
@@ -181,25 +182,27 @@ Queries are split into time-based chunks. Each worker maintains its own MongoDB 
 <tr>
 <td width="50%" valign="top">
 
-### 💾 Query aware cache
-Data is stored in the query-hash folder, cursors can be supplied a start and end date to filter through the cache.
+### 💾 Query-Aware Cache + MQL-on-Cache
+Data is stored in a query-hash folder. Supply `start_date`/`end_date` to filter through the cache, or use `create_cache()` → `CacheHandler.find()` to run **new MQL queries directly against cached Parquet** - no MongoDB round trip needed.
 
 </td>
 <td width="50%" valign="top">
+
+### 🔀 Automatic `$or` Parallelization
 
 `$or` queries are automatically split into **independent "brackets"** that can be executed in parallel.
 
 - **`$or`**: each branch becomes its own bracket (while shared filters are kept as global constraints).
 - **`$in`**: stays intact within each bracket - MongoDB handles it efficiently with index scans.
 
-Before execution, XLR8 builds an **execution plan** that detects **overlapping brackets** (cases where multiple brackets could match the same document) and ensures results are **correct and deterministic**. This behavior is covered by extensive tests to prevent duplicates or missing rows. 
+Before execution, XLR8 builds an **execution plan** that detects **overlapping brackets** (cases where multiple brackets could match the same document) and ensures results are **correct and deterministic**. This behavior is covered by extensive tests to prevent duplicates or missing rows.
 </td>
 </tr>
 <tr>
 <td width="50%" valign="top">
 
 ### 🔀 DuckDB K-Way Merge
-When sorting is required, DuckDB performs a GIL-free K-way merge across sorted shards-O(N log K) complexity.
+When sorting is required, DuckDB performs a GIL-free K-way merge across sorted shards — O(N log K) complexity.
 
 </td>
 <td width="50%" valign="top">
@@ -213,13 +216,13 @@ When sorting is required, DuckDB performs a GIL-free K-way merge across sorted s
 <td width="50%" valign="top">
 
 ### 📊 Memory-Controlled Execution
-Set `flush_ram_limit_mb` to control RAM per worker. Process large datasets without OOM errors.
+Set `flush_ram_limit_mb` to cap total RAM usage. The planner divides it across workers. Process large datasets without OOM errors.
 
 </td>
 <td width="50%" valign="top">
 
 ### 📤 Stream to Data Lakes
-`stream_to_callback()` partitions data by time and custom fields-perfect for S3/GCS ingestion pipelines.
+`stream_to_callback()` partitions data by time and custom fields — perfect for S3/GCS ingestion pipelines.
 
 </td>
 </tr>
@@ -252,7 +255,7 @@ flowchart TB
 | Benefit | How XLR8 Helps |
 |---------|----------------|
 | **Reduced container runtime** | Parallel execution finishes faster → lower billable seconds |
-| **Cache-first processing** | Fetch once, process many times without hitting MongoDB |
+| **Cache-first processing** | Fetch once, query many times with MQL filters - no MongoDB needed after cache |
 | **Smaller instances** | Memory control via `flush_ram_limit_mb` allows smaller container sizes |
 | **Predictable costs** | Consistent memory footprint = consistent billing |
 
@@ -274,7 +277,7 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 ### Methodology
 
 - **PyMongo baseline**: Stream cursor → build DataFrames in 300k-row batches → `pd.concat()`
-- **XLR8**: `cursor.to_dataframe(max_workers=14, chunking_granularity=4 days, cache_read=False)`
+- **XLR8**: `cursor.to_dataframe(max_workers=14, chunking_granularity=timedelta(days=4), cache_read=False)`
 - Each test runs sequentially to avoid database contention
 
 ### Results
@@ -299,7 +302,7 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 - **Consistent 3-4x speedup** across all data sizes
 - **Throughput**: XLR8 sustains ~180-195K rows/sec vs PyMongo's ~52-55K rows/sec
 - **Scales linearly**: Speedup improves with larger datasets as parallelism amortizes overhead
-- **Memory bounded**: Barring the part which creates the dataframe, the planner ensures each worker flushes data to cache before memory limit is breached. Use start and end arguments or to_dataframe_batches() to completley control memory usage and avoid OOM errors.
+- **Memory bounded**: Except for the final DataFrame assembly step, the planner ensures each worker flushes data to cache before the memory limit is breached. Use `start_date`/`end_date` arguments or `to_dataframe_batches()` to completely control memory usage and avoid OOM errors.
 
 > 💡 With caching, subsequent queries on the same data complete in seconds (cache hit), making repeated analytics bypass network trips.
 
@@ -314,11 +317,12 @@ Real-world benchmarks comparing XLR8 against vanilla PyMongo + pandas on a produ
 | Time-series IoT/sensor data | ✅ **Great** | Time-based chunking is native to the design |
 | Multi-device `$or` queries | ✅ **Great** | Automatic bracket parallelization |
 | One-off small queries | ➖ Neutral | Works fine, but overhead may not be worth it |
-| Single document lookups | ❌ Skip | PyMongo is already optimal for this, so xlr8 sends query to pymongo under the hood. |
-| Write-heavy workloads | ❌ Skip | XLR8 accelerates reads, not writes. Operations are sent to pymongo under the hood. |
+| Single document lookups | ❌ Skip | PyMongo is already optimal for this, so XLR8 sends the query to PyMongo under the hood. |
+| Write-heavy workloads | ❌ Skip | XLR8 accelerates reads, not writes. Write operations are sent to PyMongo under the hood. |
+
 ---
 
-## Four Ways to Get Your Data
+## Five Ways to Get Your Data
 
 ### 1. `to_dataframe()` - Full DataFrame Load
 
@@ -364,6 +368,29 @@ cursor.stream_to_callback(
 )
 ```
 **Best for**: ETL pipelines, data lake ingestion.
+
+### 5. `create_cache()` + `CacheHandler` - Query Cache with MQL
+
+```python
+# Step 1: Populate cache once (no DataFrame materialized)
+handler = cursor.create_cache(
+    chunking_granularity=timedelta(days=30),
+    max_workers=8,
+)
+
+# Step 2: Query cached Parquet with NEW MQL filters - zero MongoDB round trips!
+df1 = handler.find({"status": "active"}).to_dataframe()
+df2 = handler.find({"value": {"$gt": 100}}).sort("timestamp", -1).limit(50).to_dataframe()
+df3 = handler.find({"sensor_id": {"$in": ["A", "B"]}}).to_polars()
+
+# Step 3: Stream cached data to a data lake with MQL filtering
+handler.find({"region": "us-west"}).stream_to_callback(
+    callback=upload_to_s3,
+    partition_time_delta=timedelta(weeks=1),
+    partition_by="device_id",
+)
+```
+**Best for**: Fetch once from MongoDB, then run **many different MQL queries** against the cached Parquet without any network trips. Supported operators: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$regex`, `$exists`, `$and`, `$or`, `$nor`, `$not`, and more.
 
 ---
 
@@ -441,8 +468,6 @@ flowchart TB
 
 
 
-## XLR8 Bracket Logic
-
 ### How Parallelism Works
 
 **XLR8 parallelizes queries in TWO ways:**
@@ -490,7 +515,7 @@ XLR8 is designed for **time-series analytical workloads**. It's most useful when
 <details>
 <summary><strong>How XLR8 handles MongoDB's flexible typing</strong></summary>
 
-MongoDB fields can contain different types across documents. `Types.Any()` stores values in a 13-field struct:
+MongoDB fields can contain different types across documents. `Types.Any()` stores each value in a **13-field bitmap struct** — exactly one sub-field holds the value, all others are NULL:
 
 ```mermaid
 flowchart LR
@@ -501,19 +526,37 @@ flowchart LR
     end
     
     subgraph Storage["Types.Any() Struct"]
-        D1 --> S1["int_val: 42, type_tag: 'int'"]
-        D2 --> S2["float_val: 3.14, type_tag: 'float'"]
-        D3 --> S3["string_val: 'high', type_tag: 'string'"]
+        D1 --> S1["int64_value: 42<br/>(all other fields NULL)"]
+        D2 --> S2["float_value: 3.14<br/>(all other fields NULL)"]
+        D3 --> S3["string_value: 'high'<br/>(all other fields NULL)"]
     end
     
     subgraph Output["Coalesced Output"]
         S1 --> C["Coalesce to float: 42.0"]
         S2 --> C
-        S3 --> C["Or keep as object"]
+        S3 --> C["Or keep as string"]
     end
 ```
 
-Supported tags: `null`, `bool`, `int`, `float`, `string`, `bytes`, `date`, `timestamp`, `objectid`, `array`, `object`, `decimal128`, `uuid`
+**13 struct sub-fields** (exactly one populated, rest NULL):
+
+| Sub-field | BSON Type | Arrow Storage |
+|-----------|-----------|---------------|
+| `float_value` | Double | Float64 |
+| `int32_value` | 32-bit Integer | Int32 |
+| `int64_value` | 64-bit Integer | Int64 |
+| `string_value` | String (UTF-8) | Utf8 |
+| `objectid_value` | ObjectId | Utf8 (hex string) |
+| `decimal128_value` | Decimal128 | Utf8 (string) |
+| `regex_value` | Regex | Utf8 (pattern) |
+| `binary_value` | Binary | Utf8 (base64) |
+| `document_value` | Document | Utf8 (JSON) |
+| `array_value` | Array | Utf8 (JSON) |
+| `bool_value` | Boolean | Boolean |
+| `datetime_value` | Date | Timestamp[ms] |
+| `null_value` | Null | Boolean indicator |
+
+Encoding/decoding happens in Rust via `encode_any_values_to_arrow()` / `decode_any_struct_arrow()`. When reading back, the first non-NULL sub-field is coalesced to produce the final Python value.
 
 </details>
 
@@ -559,10 +602,51 @@ schema = Schema(
 |-----------|------|---------|-------------|
 | `chunking_granularity` | `timedelta` | `None` | Time chunk size (required for parallel) |
 | `max_workers` | `int` | `4` | Parallel worker count |
-| `flush_ram_limit_mb` | `int` | `512` | total ram limit |
+| `flush_ram_limit_mb` | `int` | `512` | Total RAM limit |
 | `row_group_size` | `int` | `None` | Parquet row group size |
 | `cache_read` | `bool` | `True` | Read from cache if available |
 | `cache_write` | `bool` | `True` | Write results to cache |
+| `start_date` | `datetime` | `None` | Filter cached data from this date (inclusive, tz-aware) |
+| `end_date` | `datetime` | `None` | Filter cached data until this date (exclusive, tz-aware) |
+
+</details>
+
+<details>
+<summary><strong><code>cursor.create_cache(**kwargs)</code></strong></summary>
+
+Populates the Parquet cache without reading back into a DataFrame. Returns a `CacheHandler`.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `chunking_granularity` | `timedelta` | `None` | Time chunk size (required for parallel) |
+| `max_workers` | `int` | `4` | Parallel worker count |
+| `flush_ram_limit_mb` | `int` | `512` | Total RAM limit |
+| `row_group_size` | `int` | `None` | Parquet row group size |
+| `force` | `bool` | `False` | Re-fetch from MongoDB even if cache exists |
+
+If population fails mid-way (network error, etc.), the partial cache is **automatically cleaned up** to prevent subsequent reads from returning incomplete data.
+
+</details>
+
+<details>
+<summary><strong><code>CacheHandler.find(filter, projection)</code></strong></summary>
+
+Query cached Parquet files with MQL filters - no MongoDB connection needed.
+
+```python
+handler = cursor.create_cache(chunking_granularity=timedelta(days=30))
+
+# All methods return a CacheCursor with chaining support
+cursor = handler.find({"status": "active"})
+cursor = cursor.sort("timestamp", -1).limit(100).skip(50)
+df = cursor.to_dataframe()
+```
+
+**CacheCursor output methods**: `to_dataframe()`, `to_polars()`, `to_dataframe_batches()`, `stream_to_callback()`
+
+**CacheCursor chaining methods**: `sort()`, `limit()`, `skip()`, `projection()`, `explain()`
+
+**Supported MQL operators**: `$eq`, `$ne`, `$gt`, `$gte`, `$lt`, `$lte`, `$in`, `$nin`, `$exists`, `$regex`, `$mod`, `$type`, `$all`, `$elemMatch`, `$size`, `$and`, `$or`, `$nor`, `$not`, bitwise operators. Unsupported: geospatial, `$expr`, `$where`, `$text`, Atlas Search.
 
 </details>
 
@@ -627,6 +711,27 @@ cursor = xlr8_col.find(
 
 </details>
 
+<details>
+<summary><strong>Fetch once, query many times with MQL</strong></summary>
+
+```python
+# 1. Create cache with a broad time range
+handler = xlr8_col.find({
+    "timestamp": {"$gte": start, "$lt": end}
+}).create_cache(chunking_granularity=timedelta(days=30))
+
+# 2. Now run MANY different queries against the same cached data
+active = handler.find({"status": "active"}).to_dataframe()
+high_val = handler.find({"value": {"$gt": 100}}).sort("value", -1).to_dataframe()
+sensors = handler.find({"sensor_id": {"$in": ["A", "B", "C"]}}).to_polars()
+
+# 3. All of these run in milliseconds - zero MongoDB round trips!
+```
+
+This is ideal for dashboards, notebooks, and iterative analysis where you fetch a broad dataset once and slice it many ways.
+
+</details>
+
 ---
 
 ## Contributing
@@ -662,3 +767,5 @@ uv run pytest
 - Add tests for new functionality
 
 **Questions?** Open an issue or start a discussion.
+
+Author: Kapil Parekh
