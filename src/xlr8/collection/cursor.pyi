@@ -27,6 +27,7 @@ import polars as pl
 import pyarrow as pa
 from bson.code import Code
 from pymongo.cursor_shared import _Hint, _Sort
+from xlr8.storage.cache_handler import CacheHandler
 from pymongo.synchronous.client_session import ClientSession
 from pymongo.synchronous.collection import Collection
 from pymongo.synchronous.cursor import Cursor as PyMongoCursor
@@ -177,3 +178,11 @@ class XLR8Cursor(Generic[_DocumentType]):
     ) -> Dict[str, Any]: ...
     def raw_cursor(self) -> PyMongoCursor[_DocumentType]: ...
     def explain_acceleration(self) -> Dict[str, Any]: ...
+    def create_cache(
+        self,
+        max_workers: int = 4,
+        chunking_granularity: Optional[timedelta] = None,
+        flush_ram_limit_mb: int = 512,
+        row_group_size: Optional[int] = None,
+        force: bool = False,
+    ) -> CacheHandler: ...
