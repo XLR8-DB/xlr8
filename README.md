@@ -755,8 +755,8 @@ This is ideal for dashboards, notebooks, and iterative analysis where you fetch 
 <summary><strong>Cross-container cache sharing</strong></summary>
 
 ```python
-# Container A — fetch and write to mounted storage
-handler = xlr8_col.find(query).create_cache(
+# Container A — fetch and write to mounted storage (no DataFrame)
+xlr8_col.find(query).create_cache(
     path="/mnt/shared_cache/candlesticks_2024",
     chunking_granularity=timedelta(days=30),
 )
